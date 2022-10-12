@@ -766,6 +766,9 @@ void __noreturn do_exit(long code)
 	validate_creds_for_do_exit(tsk);
 
 	io_uring_files_cancel();
+
+	WARN_ON(!list_empty(&tsk->sleep_plug_list));
+
 	exit_signals(tsk);  /* sets PF_EXITING */
 
 	/* sync mm's RSS info before statistics gathering */

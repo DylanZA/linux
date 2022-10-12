@@ -4371,6 +4371,8 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->wake_entry.u_flags = CSD_TYPE_TTWU;
 	p->migration_pending = NULL;
 #endif
+
+	INIT_LIST_HEAD(&p->sleep_plug_list);
 }
 
 DEFINE_STATIC_KEY_FALSE(sched_numa_balancing);
@@ -6548,7 +6550,7 @@ static inline void sched_submit_work(struct task_struct *tsk)
 	 * If we are going to sleep and we have plugged IO queued,
 	 * make sure to submit it to avoid deadlocks.
 	 */
-	blk_flush_plug(tsk->plug, true);
+	sched_sleep_plug_flush(&current->sleep_plug_list);
 }
 
 static void sched_update_worker(struct task_struct *tsk)
@@ -8681,7 +8683,7 @@ int io_schedule_prepare(void)
 	int old_iowait = current->in_iowait;
 
 	current->in_iowait = 1;
-	blk_flush_plug(current->plug, true);
+	sched_sleep_plug_flush(&current->sleep_plug_list);
 	return old_iowait;
 }
 
@@ -11245,4 +11247,15 @@ const u32 sched_prio_to_wmult[40] = {
 void call_trace_sched_update_nr_running(struct rq *rq, int count)
 {
         trace_sched_update_nr_running_tp(rq, count);
+}
+
+void __sched_sleep_plug_flush(struct list_head *list)
+{
+	struct list_head *pos, *n;
+	struct sched_sleep_plug *p;
+
+	list_for_each_safe(pos, n, list) {
+		p = list_entry(pos, struct sched_sleep_plug, list);
+		p->cb(p);
+	}
 }

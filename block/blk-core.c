@@ -1033,6 +1033,12 @@ int kblockd_mod_delayed_work_on(int cpu, struct delayed_work *dwork,
 }
 EXPORT_SYMBOL(kblockd_mod_delayed_work_on);
 
+static void blk_flush_cb(struct sched_sleep_plug* s)
+{
+	struct blk_plug *plug = container_of(s, struct blk_plug, sched_sleep_plug);
+	__blk_flush_plug(plug, true);
+}
+
 void blk_start_plug_nr_ios(struct blk_plug *plug, unsigned short nr_ios)
 {
 	struct task_struct *tsk = current;
@@ -1056,6 +1062,8 @@ void blk_start_plug_nr_ios(struct blk_plug *plug, unsigned short nr_ios)
 	 * Store ordering should not be needed here, since a potential
 	 * preempt will imply a full memory barrier
 	 */
+	plug->sched_sleep_plug.cb = blk_flush_cb;
+	list_add(&plug->sched_sleep_plug.list, &tsk->sleep_plug_list);
 	tsk->plug = plug;
 }
 
@@ -1160,6 +1168,7 @@ void blk_finish_plug(struct blk_plug *plug)
 {
 	if (plug == current->plug) {
 		__blk_flush_plug(plug, false);
+		list_del(&plug->sched_sleep_plug.list);
 		current->plug = NULL;
 	}
 }

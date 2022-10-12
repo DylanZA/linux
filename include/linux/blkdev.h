@@ -25,6 +25,7 @@
 #include <linux/srcu.h>
 #include <linux/uuid.h>
 #include <linux/xarray.h>
+#include <linux/sched/sleep_plug.h>
 
 struct module;
 struct request_queue;
@@ -992,6 +993,7 @@ void blk_mark_disk_dead(struct gendisk *disk);
  * blk_flush_plug() is called.
  */
 struct blk_plug {
+	struct sched_sleep_plug sched_sleep_plug;
 	struct request *mq_list; /* blk-mq requests */
 
 	/* if ios_left is > 1, we can batch tag/rq allocations */

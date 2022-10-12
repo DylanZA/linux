@@ -1171,6 +1171,7 @@ struct task_struct {
 
 	/* Stack plugging: */
 	struct blk_plug			*plug;
+	struct list_head		sleep_plug_list;
 
 	/* VM state: */
 	struct reclaim_state		*reclaim_state;
