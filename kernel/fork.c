@@ -2305,6 +2305,7 @@ static __latent_entropy struct task_struct *copy_process(
 #ifdef CONFIG_BLOCK
 	p->plug = NULL;
 #endif
+	INIT_LIST_HEAD(&p->sleep_plug_list);
 	futex_init_task(p);
 
 	/*

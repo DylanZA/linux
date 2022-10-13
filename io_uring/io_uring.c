@@ -130,6 +130,13 @@ enum {
 	IO_EVENTFD_OP_FREE_BIT,
 };
 
+enum {
+	IO_DEFER_PLUG_DONE_BIT,
+	IO_DEFER_PLUG_TW_SET_BIT,
+	IO_DEFER_PLUG_PLUG_SET_BIT,
+	IO_DEFER_PLUG_CLEANED_BIT,
+};
+
 struct io_defer_entry {
 	struct list_head	list;
 	struct io_kiocb		*req;
@@ -149,6 +156,7 @@ static void io_clean_op(struct io_kiocb *req);
 static void io_queue_sqe(struct io_kiocb *req);
 static void io_move_task_work_from_local(struct io_ring_ctx *ctx);
 static void __io_submit_flush_completions(struct io_ring_ctx *ctx);
+static void defer_plug_work_tw(struct callback_head *cb);
 
 static struct kmem_cache *req_cachep;
 
@@ -263,6 +271,63 @@ static int io_alloc_hash_table(struct io_hash_table *table, unsigned bits)
 	table->hash_bits = bits;
 	init_hash_table(table, hash_buckets);
 	return 0;
+}
+
+static void ____defer_plug_cleanup(struct io_ring_ctx *ctx)
+{
+	if (test_and_set_bit(IO_DEFER_PLUG_CLEANED_BIT, &ctx->defer_plug.state))
+		return;
+
+	/*
+	 * Free the defer plug ctx reference, remove the plug and exit.
+	 * leave work_set to avoid re-entering
+	 */
+	list_del_init(&ctx->defer_plug.plug.list);
+	percpu_ref_put(&ctx->refs);
+	atomic_dec(&ctx->submitter_task->io_uring->inflight_tracked);
+	io_put_task(ctx->submitter_task, 1);
+}
+
+static void stop_defer_plug(struct io_ring_ctx *ctx)
+{
+	int ret;
+
+	if (!(ctx->flags & IORING_SETUP_DEFER_TASKRUN))
+		return;
+
+	if(test_bit(IO_DEFER_PLUG_CLEANED_BIT, &ctx->defer_plug.state))
+		return;
+
+	set_bit(IO_DEFER_PLUG_DONE_BIT, &ctx->defer_plug.state);
+
+	if (test_and_set_bit(IO_DEFER_PLUG_TW_SET_BIT, &ctx->defer_plug.state))
+		return;
+
+	ret = task_work_add(ctx->submitter_task, &ctx->defer_plug.work, TWA_SIGNAL);
+	if (unlikely(ret))
+		____defer_plug_cleanup(ctx);
+}
+
+static int init_defer_plug(struct io_ring_ctx *ctx)
+	__must_hold(&ctx->uring_lock)
+{
+	int ret;
+
+	mutex_unlock(&ctx->uring_lock);
+	ret = io_uring_add_tctx_node(ctx);
+	mutex_lock(&ctx->uring_lock);
+	if (ret)
+		return ret;
+
+	ctx->submitter_task = get_task_struct(current);
+	init_task_work(&ctx->defer_plug.work, defer_plug_work_tw);
+	INIT_LIST_HEAD(&ctx->defer_plug.plug.list);
+	ctx->defer_plug.state = 0;
+
+	io_get_task_refs(1);
+	atomic_inc(&current->io_uring->inflight_tracked);
+	percpu_ref_get(&ctx->refs);
+	return ret;
 }
 
 static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
@@ -1119,6 +1184,17 @@ static void io_req_local_work_add(struct io_kiocb *req)
 		io_eventfd_signal(ctx);
 	io_cqring_wake(ctx);
 
+	if (!test_bit(IO_DEFER_PLUG_PLUG_SET_BIT, &ctx->defer_plug.state) &&
+	    !test_bit(IO_DEFER_PLUG_DONE_BIT, &ctx->defer_plug.state) &&
+	    !test_and_set_bit(IO_DEFER_PLUG_TW_SET_BIT, &ctx->defer_plug.state)) {
+		if (unlikely(task_work_add(req->task,
+					   &ctx->defer_plug.work,
+					   ctx->notify_method /* ? */))) {
+			/* task is exiting, drop the defer ref */
+			set_bit(IO_DEFER_PLUG_DONE_BIT, &ctx->defer_plug.state);
+			____defer_plug_cleanup(ctx);
+		}
+	}
 }
 
 static inline void __io_req_task_work_add(struct io_kiocb *req, bool allow_local)
@@ -1207,6 +1283,9 @@ again:
 		goto again;
 	}
 
+	if (unlikely(!list_empty(&ctx->defer_plug.plug.list)))
+		list_del_init(&ctx->defer_plug.plug.list);
+
 	if (locked)
 		io_submit_flush_completions(ctx);
 	trace_io_uring_local_work_run(ctx, ret, loops);
@@ -1229,6 +1308,30 @@ int io_run_local_work(struct io_ring_ctx *ctx)
 		mutex_unlock(&ctx->uring_lock);
 
 	return ret;
+}
+
+static void defer_plug_cb(struct sched_sleep_plug *cb)
+{
+	struct io_ring_ctx *ctx = container_of(cb, struct io_ring_ctx, defer_plug.plug);
+
+	clear_bit(IO_DEFER_PLUG_PLUG_SET_BIT, &ctx->defer_plug.state);
+	io_run_local_work(ctx);
+}
+
+static void defer_plug_work_tw(struct callback_head *cb)
+{
+	struct io_ring_ctx *ctx = container_of(cb, struct io_ring_ctx, defer_plug.work);
+
+	clear_bit(IO_DEFER_PLUG_TW_SET_BIT, &ctx->defer_plug.state);
+	if (test_bit(IO_DEFER_PLUG_DONE_BIT, &ctx->defer_plug.state)) {
+		____defer_plug_cleanup(ctx);
+		return;
+	}
+	if (!list_empty(&ctx->defer_plug.plug.list))
+		return;
+	set_bit(IO_DEFER_PLUG_PLUG_SET_BIT, &ctx->defer_plug.state);
+	ctx->defer_plug.plug.cb = defer_plug_cb;
+	list_add(&ctx->defer_plug.plug.list, &current->sleep_plug_list);
 }
 
 static void io_req_tw_post(struct io_kiocb *req, bool *locked)
@@ -2940,8 +3043,10 @@ static __cold bool io_uring_try_cancel_requests(struct io_ring_ctx *ctx,
 		}
 	}
 
-	if (ctx->flags & IORING_SETUP_DEFER_TASKRUN)
+	if (ctx->flags & IORING_SETUP_DEFER_TASKRUN) {
+		stop_defer_plug(ctx);
 		ret |= io_run_local_work(ctx) > 0;
+	}
 	ret |= io_cancel_defer_files(ctx, task, cancel_all);
 	mutex_lock(&ctx->uring_lock);
 	ret |= io_poll_remove_all(ctx, task, cancel_all);
@@ -3488,6 +3593,8 @@ static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 		goto err;
 	}
 
+	ctx->defer_plug.state = BIT(IO_DEFER_PLUG_DONE_BIT) | BIT(IO_DEFER_PLUG_CLEANED_BIT);
+
 	/*
 	 * This is just grabbed for accounting purposes. When a process exits,
 	 * the mm is exited and dropped before the files, hence we need to hang
@@ -3542,8 +3649,13 @@ static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 	}
 
 	if (ctx->flags & IORING_SETUP_SINGLE_ISSUER
-	    && !(ctx->flags & IORING_SETUP_R_DISABLED))
-		ctx->submitter_task = get_task_struct(current);
+		&& !(ctx->flags & IORING_SETUP_R_DISABLED)) {
+		mutex_lock(&ctx->uring_lock);
+		ret = init_defer_plug(ctx);
+		mutex_unlock(&ctx->uring_lock);
+		if (ret)
+			goto err;
+	}
 
 	file = io_uring_get_file(ctx);
 	if (IS_ERR(file)) {
@@ -3736,8 +3848,11 @@ static int io_register_enable_rings(struct io_ring_ctx *ctx)
 	if (!(ctx->flags & IORING_SETUP_R_DISABLED))
 		return -EBADFD;
 
-	if (ctx->flags & IORING_SETUP_SINGLE_ISSUER && !ctx->submitter_task)
-		ctx->submitter_task = get_task_struct(current);
+	if (ctx->flags & IORING_SETUP_SINGLE_ISSUER && !ctx->submitter_task) {
+		int ret = init_defer_plug(ctx);
+		if (ret)
+			return ret;
+	}
 
 	if (ctx->restrictions.registered)
 		ctx->restricted = 1;

@@ -47,6 +47,12 @@ struct io_hash_table {
 	unsigned		hash_bits;
 };
 
+struct io_defer_plug {
+	struct callback_head		work;
+	struct sched_sleep_plug		plug;
+	unsigned long			state;
+};
+
 /*
  * Arbitrary limit, can be raised if need be
  */
@@ -316,6 +322,9 @@ struct io_ring_ctx {
 		struct list_head	ltimeout_list;
 		unsigned		cq_last_tm_flush;
 	} ____cacheline_aligned_in_smp;
+
+	/* todo where to put this */
+	struct io_defer_plug defer_plug;
 
 	/* Keep this last, we don't need it for the fast path */
 
