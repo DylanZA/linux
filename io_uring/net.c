@@ -71,6 +71,11 @@ struct io_send_zc_msg {
 	struct io_kiocb		*notif;
 };
 
+struct io_recv_msg {
+	struct io_sr_msg	sr;
+	int			retarget_fd;
+};
+
 
 #define IO_APOLL_MULTI_POLLED (REQ_F_APOLL_MULTISHOT | REQ_F_POLLED)
 
@@ -548,7 +553,8 @@ int io_recvmsg_prep_async(struct io_kiocb *req)
 
 int io_recvmsg_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
-	struct io_sr_msg *sr = io_kiocb_to_cmd(req, struct io_sr_msg);
+	struct io_recv_msg *rcv = io_kiocb_to_cmd(req, struct io_recv_msg);
+	struct io_sr_msg *sr = &rcv->sr;
 
 	if (unlikely(sqe->file_index || sqe->addr2))
 		return -EINVAL;
@@ -573,6 +579,13 @@ int io_recvmsg_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 		req->flags |= REQ_F_APOLL_MULTISHOT;
 	}
 
+
+	if ((req->flags & REQ_F_FIXED_FILE)
+		&& !(req->flags & IORING_RECVSEND_FIXED_BUF)) {
+		rcv->retarget_fd = req->cqe.fd;
+	} else {
+		rcv->retarget_fd = -1;
+	}
 #ifdef CONFIG_COMPAT
 	if (req->ctx->compat)
 		sr->msg_flags |= MSG_CMSG_COMPAT;
@@ -708,6 +721,14 @@ static int io_recvmsg_multishot(struct socket *sock, struct io_sr_msg *io,
 
 	return sizeof(struct io_uring_recvmsg_out) + kmsg->namelen +
 			kmsg->controllen + err;
+}
+
+bool io_recv_can_retarget_rsrc(struct io_kiocb *req)
+{
+	struct io_recv_msg *rcv = io_kiocb_to_cmd(req, struct io_recv_msg);
+	if (rcv->retarget_fd < 0)
+		return false;
+	return io_file_peek_fixed(req, rcv->retarget_fd) == req->file;
 }
 
 int io_recvmsg(struct io_kiocb *req, unsigned int issue_flags)

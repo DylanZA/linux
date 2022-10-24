@@ -43,6 +43,7 @@ int io_recvmsg_prep_async(struct io_kiocb *req);
 int io_recvmsg_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe);
 int io_recvmsg(struct io_kiocb *req, unsigned int issue_flags);
 int io_recv(struct io_kiocb *req, unsigned int issue_flags);
+bool io_recv_can_retarget_rsrc(struct io_kiocb *req);
 
 void io_sendrecv_fail(struct io_kiocb *req);
 

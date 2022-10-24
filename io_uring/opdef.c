@@ -178,6 +178,7 @@ const struct io_op_def io_op_defs[] = {
 		.prep_async		= io_recvmsg_prep_async,
 		.cleanup		= io_sendmsg_recvmsg_cleanup,
 		.fail			= io_sendrecv_fail,
+		.can_retarget_rsrc	= io_recv_can_retarget_rsrc,
 #else
 		.prep			= io_eopnotsupp_prep,
 #endif
@@ -342,6 +343,7 @@ const struct io_op_def io_op_defs[] = {
 		.prep			= io_recvmsg_prep,
 		.issue			= io_recv,
 		.fail			= io_sendrecv_fail,
+		.can_retarget_rsrc	= io_recv_can_retarget_rsrc,
 #else
 		.prep			= io_eopnotsupp_prep,
 #endif
