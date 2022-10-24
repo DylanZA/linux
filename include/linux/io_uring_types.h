@@ -327,6 +327,8 @@ struct io_ring_ctx {
 	struct llist_head		rsrc_put_llist;
 	struct list_head		rsrc_ref_list;
 	spinlock_t			rsrc_ref_lock;
+	struct delayed_work		rsrc_retarget_work;
+	bool				rsrc_retarget_scheduled;
 
 	struct list_head		io_buffers_pages;
 

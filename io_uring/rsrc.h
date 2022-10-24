@@ -54,6 +54,7 @@ struct io_mapped_ubuf {
 };
 
 void io_rsrc_put_work(struct work_struct *work);
+void io_rsrc_retarget_work(struct work_struct *work);
 void io_rsrc_refs_refill(struct io_ring_ctx *ctx);
 void io_wait_rsrc_data(struct io_rsrc_data *data);
 void io_rsrc_node_destroy(struct io_rsrc_node *ref_node);

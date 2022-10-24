@@ -15,6 +15,7 @@
 #include "io_uring.h"
 #include "openclose.h"
 #include "rsrc.h"
+#include "opdef.h"
 
 struct io_rsrc_update {
 	struct file			*file;
@@ -204,6 +205,95 @@ void io_rsrc_put_work(struct work_struct *work)
 	}
 }
 
+
+static unsigned int io_rsrc_retarget_req(struct io_ring_ctx *ctx,
+					 struct io_kiocb *req)
+	__must_hold(&ctx->uring_lock)
+{
+	if (!req->rsrc_node ||
+	     req->rsrc_node == ctx->rsrc_node)
+		return 0;
+	if (!io_op_defs[req->opcode].can_retarget_rsrc)
+		return 0;
+	if (!(*io_op_defs[req->opcode].can_retarget_rsrc)(req))
+		return 0;
+
+	io_rsrc_put_node(req->rsrc_node, 1);
+	req->rsrc_node = ctx->rsrc_node;
+	return 1;
+}
+
+static unsigned int io_rsrc_retarget_table(struct io_ring_ctx *ctx,
+				   struct io_hash_table *table)
+{
+	unsigned nr_buckets = 1U << table->hash_bits;
+	unsigned int refs = 0;
+	struct io_kiocb *req;
+	int i;
+
+	for (i = 0; i < nr_buckets; i++) {
+		struct io_hash_bucket *hb = &table->hbs[i];
+
+		spin_lock(&hb->lock);
+		hlist_for_each_entry(req, &hb->list, hash_node)
+			refs += io_rsrc_retarget_req(ctx, req);
+		spin_unlock(&hb->lock);
+	}
+	return refs;
+}
+
+static void io_rsrc_retarget_schedule(struct io_ring_ctx *ctx)
+	__must_hold(&ctx->uring_lock)
+{
+	percpu_ref_get(&ctx->refs);
+	mod_delayed_work(system_wq, &ctx->rsrc_retarget_work, 10 * HZ);
+	ctx->rsrc_retarget_scheduled = true;
+}
+
+static void __io_rsrc_retarget_work(struct io_ring_ctx *ctx)
+	__must_hold(&ctx->uring_lock)
+{
+	struct io_rsrc_node *node;
+	unsigned int refs;
+	bool any_waiting;
+
+	if (!ctx->rsrc_node)
+		return;
+
+	spin_lock_irq(&ctx->rsrc_ref_lock);
+	any_waiting = false;
+	list_for_each_entry(node, &ctx->rsrc_ref_list, node) {
+		if (!node->done) {
+			any_waiting = true;
+			break;
+		}
+	}
+	spin_unlock_irq(&ctx->rsrc_ref_lock);
+
+	if (!any_waiting)
+		return;
+
+	refs = io_rsrc_retarget_table(ctx, &ctx->cancel_table);
+	refs += io_rsrc_retarget_table(ctx, &ctx->cancel_table_locked);
+
+	ctx->rsrc_cached_refs -= refs;
+	while (unlikely(ctx->rsrc_cached_refs < 0))
+		io_rsrc_refs_refill(ctx);
+}
+
+void io_rsrc_retarget_work(struct work_struct *work)
+{
+	struct io_ring_ctx *ctx;
+
+	ctx = container_of(work, struct io_ring_ctx, rsrc_retarget_work.work);
+
+	mutex_lock(&ctx->uring_lock);
+	ctx->rsrc_retarget_scheduled = false;
+	__io_rsrc_retarget_work(ctx);
+	mutex_unlock(&ctx->uring_lock);
+	percpu_ref_put(&ctx->refs);
+}
+
 void io_wait_rsrc_data(struct io_rsrc_data *data)
 {
 	if (data && !atomic_dec_and_test(&data->refs))
@@ -285,6 +375,8 @@ void io_rsrc_node_switch(struct io_ring_ctx *ctx,
 		atomic_inc(&data_to_kill->refs);
 		percpu_ref_kill(&rsrc_node->refs);
 		ctx->rsrc_node = NULL;
+		if (!ctx->rsrc_retarget_scheduled)
+			io_rsrc_retarget_schedule(ctx);
 	}
 
 	if (!ctx->rsrc_node) {
