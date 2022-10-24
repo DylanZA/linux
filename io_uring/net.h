@@ -48,6 +48,7 @@ void io_sendrecv_fail(struct io_kiocb *req);
 
 int io_accept_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe);
 int io_accept(struct io_kiocb *req, unsigned int issue_flags);
+bool io_accept_can_retarget_rsrc(struct io_kiocb *req);
 
 int io_socket_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe);
 int io_socket(struct io_kiocb *req, unsigned int issue_flags);

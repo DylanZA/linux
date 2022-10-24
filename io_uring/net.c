@@ -30,6 +30,7 @@ struct io_accept {
 	int				flags;
 	u32				file_slot;
 	unsigned long			nofile;
+	int				retarget_fd;
 };
 
 struct io_socket {
@@ -1228,6 +1229,14 @@ void io_sendrecv_fail(struct io_kiocb *req)
 		req->cqe.flags |= IORING_CQE_F_MORE;
 }
 
+bool io_accept_can_retarget_rsrc(struct io_kiocb *req)
+{
+	struct io_accept *accept = io_kiocb_to_cmd(req, struct io_accept);
+	if (accept->retarget_fd < 0)
+		return false;
+	return io_file_peek_fixed(req, accept->retarget_fd) == req->file;
+}
+
 int io_accept_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
 	struct io_accept *accept = io_kiocb_to_cmd(req, struct io_accept);
@@ -1258,6 +1267,11 @@ int io_accept_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 		accept->flags = (accept->flags & ~SOCK_NONBLOCK) | O_NONBLOCK;
 	if (flags & IORING_ACCEPT_MULTISHOT)
 		req->flags |= REQ_F_APOLL_MULTISHOT;
+	if (req->flags & REQ_F_FIXED_FILE) {
+		accept->retarget_fd = req->cqe.fd;
+	} else {
+		accept->retarget_fd = -1;
+	}
 	return 0;
 }
 

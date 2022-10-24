@@ -206,6 +206,7 @@ const struct io_op_def io_op_defs[] = {
 #if defined(CONFIG_NET)
 		.prep			= io_accept_prep,
 		.issue			= io_accept,
+		.can_retarget_rsrc	= io_accept_can_retarget_rsrc,
 #else
 		.prep			= io_eopnotsupp_prep,
 #endif
