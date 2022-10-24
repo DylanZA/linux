@@ -283,6 +283,7 @@ const struct io_op_def io_op_defs[] = {
 		.prep			= io_prep_rw,
 		.issue			= io_read,
 		.fail			= io_rw_fail,
+		.can_retarget_rsrc	= io_read_can_retarget_rsrc,
 	},
 	[IORING_OP_WRITE] = {
 		.needs_file		= 1,

@@ -1068,3 +1068,18 @@ int io_do_iopoll(struct io_ring_ctx *ctx, bool force_nonspin)
 	io_free_batch_list(ctx, pos);
 	return nr_events;
 }
+
+bool io_read_can_retarget_rsrc(struct io_kiocb *req)
+{
+	struct file *f;
+	if (!(req->flags & REQ_F_FIXED_FILE))
+		return false;
+
+	f = io_file_peek_fixed(req, req->cqe.fd);
+
+	if (f != req->file)
+		return false;
+
+	/* todo more things? */
+	return true;
+}
