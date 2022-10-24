@@ -44,6 +44,7 @@ struct page **io_pin_pages(unsigned long ubuf, unsigned long len, int *npages);
 struct file *io_file_get_normal(struct io_kiocb *req, int fd);
 struct file *io_file_get_fixed(struct io_kiocb *req, int fd,
 			       unsigned issue_flags);
+struct file *io_file_peek_fixed(struct io_kiocb *req, int fd);
 
 static inline bool io_req_ffs_set(struct io_kiocb *req)
 {

@@ -1841,6 +1841,23 @@ fail:
 		io_req_task_queue_fail(req, ret);
 }
 
+static unsigned long __io_file_peek_fixed(struct io_kiocb *req, int fd)
+	__must_hold(&req->ctx->uring_lock)
+{
+	struct io_ring_ctx *ctx = req->ctx;
+
+	if (unlikely((unsigned int)fd >= ctx->nr_user_files))
+		return 0;
+	fd = array_index_nospec(fd, ctx->nr_user_files);
+	return io_fixed_file_slot(&ctx->file_table, fd)->file_ptr;
+}
+
+struct file *io_file_peek_fixed(struct io_kiocb *req, int fd)
+	__must_hold(&req->ctx->uring_lock)
+{
+	return (struct file *) (__io_file_peek_fixed(req, fd) & FFS_MASK);
+}
+
 inline struct file *io_file_get_fixed(struct io_kiocb *req, int fd,
 				      unsigned int issue_flags)
 {
@@ -1849,17 +1866,14 @@ inline struct file *io_file_get_fixed(struct io_kiocb *req, int fd,
 	unsigned long file_ptr;
 
 	io_ring_submit_lock(ctx, issue_flags);
-
-	if (unlikely((unsigned int)fd >= ctx->nr_user_files))
-		goto out;
-	fd = array_index_nospec(fd, ctx->nr_user_files);
-	file_ptr = io_fixed_file_slot(&ctx->file_table, fd)->file_ptr;
+	file_ptr = __io_file_peek_fixed(req, fd);
 	file = (struct file *) (file_ptr & FFS_MASK);
 	file_ptr &= ~FFS_MASK;
 	/* mask in overlapping REQ_F and FFS bits */
 	req->flags |= (file_ptr << REQ_F_SUPPORT_NOWAIT_BIT);
 	io_req_set_rsrc_node(req, ctx, 0);
-out:
+	WARN_ON_ONCE(file && !test_bit(fd, ctx->file_table.bitmap));
+
 	io_ring_submit_unlock(ctx, issue_flags);
 	return file;
 }
