@@ -856,6 +856,24 @@ static bool io_wq_for_each_worker(struct io_wqe *wqe,
 	return ret;
 }
 
+struct for_each_work_data {
+	work_for_each_fn *cb;
+	void *data;
+};
+
+static bool io_wq_for_each_work(struct io_worker *wqe, void *data)
+{
+	struct for_each_work_data *f = data;
+	raw_spin_lock(&wqe->lock);
+
+	if (wqe->cur_work)
+		f->cb(wqe->cur_work, f->data);
+	if (wqe->next_work)
+		f->cb(wqe->next_work, f->data);
+	raw_spin_unlock(&wqe->lock);
+	return false;
+}
+
 static bool io_wq_worker_wake(struct io_worker *worker, void *data)
 {
 	__set_notify_signal(worker->task);
@@ -1111,6 +1129,37 @@ enum io_wq_cancel io_wq_cancel_cb(struct io_wq *wq, work_cancel_fn *cancel,
 	if (match.nr_pending)
 		return IO_WQ_CANCEL_OK;
 	return IO_WQ_CANCEL_NOTFOUND;
+}
+
+void io_wq_for_each(struct io_wq *wq, work_for_each_fn *cb, void *data)
+{
+	int node, i;
+	struct for_each_work_data wq_data = {
+		.cb = cb,
+		.data = data
+	};
+
+	for_each_node(node) {
+		struct io_wqe *wqe = wq->wqes[node];
+
+		for (i = 0; i < IO_WQ_ACCT_NR; i++) {
+			struct io_wqe_acct *acct = io_get_acct(wqe, i == 0);
+			struct io_wq_work_node *node, *prev;
+			struct io_wq_work *work;
+
+			raw_spin_lock(&acct->lock);
+			wq_list_for_each(node, prev, &acct->work_list) {
+				work = container_of(node, struct io_wq_work, list);
+				cb(work, data);
+			}
+			raw_spin_unlock(&acct->lock);
+		}
+
+
+		raw_spin_lock(&wqe->lock);
+		io_wq_for_each_worker(wqe, io_wq_for_each_work, &wq_data);
+		raw_spin_unlock(&wqe->lock);
+	}
 }
 
 static int io_wqe_hash_wake(struct wait_queue_entry *wait, unsigned mode,

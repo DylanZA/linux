@@ -63,6 +63,10 @@ typedef bool (work_cancel_fn)(struct io_wq_work *, void *);
 enum io_wq_cancel io_wq_cancel_cb(struct io_wq *wq, work_cancel_fn *cancel,
 					void *data, bool cancel_all);
 
+typedef void (work_for_each_fn)(struct io_wq_work *, void *);
+
+void io_wq_for_each(struct io_wq *wq, work_for_each_fn *cb, void *data);
+
 #if defined(CONFIG_IO_WQ)
 extern void io_wq_worker_sleeping(struct task_struct *);
 extern void io_wq_worker_running(struct task_struct *);

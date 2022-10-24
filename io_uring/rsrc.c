@@ -9,6 +9,7 @@
 #include <linux/hugetlb.h>
 #include <linux/compat.h>
 #include <linux/io_uring.h>
+#include <linux/sysctl.h>
 
 #include <uapi/linux/io_uring.h>
 
@@ -16,6 +17,7 @@
 #include "openclose.h"
 #include "rsrc.h"
 #include "opdef.h"
+#include "tctx.h"
 
 struct io_rsrc_update {
 	struct file			*file;
@@ -242,19 +244,56 @@ static unsigned int io_rsrc_retarget_table(struct io_ring_ctx *ctx,
 	return refs;
 }
 
+unsigned int retarget_period_ms = 10000;
+
 static void io_rsrc_retarget_schedule(struct io_ring_ctx *ctx)
 	__must_hold(&ctx->uring_lock)
 {
 	percpu_ref_get(&ctx->refs);
-	mod_delayed_work(system_wq, &ctx->rsrc_retarget_work, 10 * HZ);
+	mod_delayed_work(system_wq, &ctx->rsrc_retarget_work, retarget_period_ms * HZ / 1000);
 	ctx->rsrc_retarget_scheduled = true;
+}
+
+struct io_retarget_data {
+	unsigned int refs;
+	struct io_ring_ctx *ctx;
+};
+
+static void io_wq_cb(struct io_wq_work *work, void *data)
+{
+	struct io_kiocb *req = container_of(work, struct io_kiocb, work);
+	struct io_retarget_data *rd = data;
+
+	if (req->ctx != rd->ctx)
+		return;
+
+	rd->refs += io_rsrc_retarget_req(rd->ctx, req);
+}
+
+static void io_rsrc_retarget_wq(struct io_retarget_data *data)
+	__must_hold(&data->ctx->uring_lock)
+{
+	struct io_ring_ctx *ctx = data->ctx;
+	struct io_tctx_node *node;
+
+	list_for_each_entry(node, &ctx->tctx_list, ctx_node) {
+		struct io_uring_task *tctx = node->task->io_uring;
+
+		if (!tctx->io_wq)
+			continue;
+
+		io_wq_for_each(tctx->io_wq, io_wq_cb, data);
+	}
 }
 
 static void __io_rsrc_retarget_work(struct io_ring_ctx *ctx)
 	__must_hold(&ctx->uring_lock)
 {
 	struct io_rsrc_node *node;
-	unsigned int refs;
+	struct io_retarget_data data = {
+		.ctx = ctx,
+		.refs = 0
+	};
 	bool any_waiting;
 
 	if (!ctx->rsrc_node)
@@ -273,10 +312,11 @@ static void __io_rsrc_retarget_work(struct io_ring_ctx *ctx)
 	if (!any_waiting)
 		return;
 
-	refs = io_rsrc_retarget_table(ctx, &ctx->cancel_table);
-	refs += io_rsrc_retarget_table(ctx, &ctx->cancel_table_locked);
+	data.refs += io_rsrc_retarget_table(ctx, &ctx->cancel_table);
+	data.refs += io_rsrc_retarget_table(ctx, &ctx->cancel_table_locked);
+	io_rsrc_retarget_wq(&data);
 
-	ctx->rsrc_cached_refs -= refs;
+	ctx->rsrc_cached_refs -= data.refs;
 	while (unlikely(ctx->rsrc_cached_refs < 0))
 		io_rsrc_refs_refill(ctx);
 }
@@ -1457,3 +1497,27 @@ int io_import_fixed(int ddir, struct iov_iter *iter,
 
 	return 0;
 }
+
+#if defined(CONFIG_SYSCTL) && defined(CONFIG_PROC_FS)
+
+static struct ctl_table retarget_sysctls[] = {
+	{
+		.procname	= "retarget_period",
+		.data		= &retarget_period_ms,
+		.maxlen		= sizeof(retarget_period_ms),
+		.proc_handler	= proc_douintvec_minmax,
+		.mode		= 0644,
+		.extra1		= SYSCTL_LONG_ZERO,
+		.extra2		= SYSCTL_LONG_MAX,
+	},
+	{ }
+};
+
+static int __init init_rsrc_sysctls(void)
+{
+	register_sysctl_init("io_uring", retarget_sysctls);
+	return 0;
+}
+fs_initcall(init_rsrc_sysctls);
+
+#endif
