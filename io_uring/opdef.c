@@ -133,6 +133,7 @@ const struct io_op_def io_op_defs[] = {
 		.name			= "POLL_ADD",
 		.prep			= io_poll_add_prep,
 		.issue			= io_poll_add,
+		.can_retarget_rsrc	= io_poll_can_retarget_rsrc,
 	},
 	[IORING_OP_POLL_REMOVE] = {
 		.audit_skip		= 1,

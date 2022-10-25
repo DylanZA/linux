@@ -12,6 +12,7 @@ struct io_poll {
 	struct file			*file;
 	struct wait_queue_head		*head;
 	__poll_t			events;
+	int				fd; /* only used by poll_add */
 	struct wait_queue_entry		wait;
 };
 
@@ -37,3 +38,4 @@ bool io_poll_remove_all(struct io_ring_ctx *ctx, struct task_struct *tsk,
 			bool cancel_all);
 
 void io_apoll_cache_free(struct io_cache_entry *entry);
+bool io_poll_can_retarget_rsrc(struct io_kiocb *req);

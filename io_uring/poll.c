@@ -863,6 +863,7 @@ int io_poll_add_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 		return -EINVAL;
 
 	poll->events = io_poll_parse_events(sqe, flags);
+	poll->fd = req->cqe.fd;
 	return 0;
 }
 
@@ -962,4 +963,15 @@ out:
 void io_apoll_cache_free(struct io_cache_entry *entry)
 {
 	kfree(container_of(entry, struct async_poll, cache));
+}
+
+bool io_poll_can_retarget_rsrc(struct io_kiocb *req)
+{
+	struct io_poll *poll = io_kiocb_to_cmd(req, struct io_poll);
+
+	if (req->flags & REQ_F_FIXED_FILE &&
+	    io_file_peek_fixed(req, poll->fd) != req->file)
+		return false;
+
+	return true;
 }
