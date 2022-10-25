@@ -23,3 +23,4 @@ int io_writev_prep_async(struct io_kiocb *req);
 void io_readv_writev_cleanup(struct io_kiocb *req);
 void io_rw_fail(struct io_kiocb *req);
 bool io_read_can_retarget_rsrc(struct io_kiocb *req);
+bool io_read_fixed_can_retarget_rsrc(struct io_kiocb *req);

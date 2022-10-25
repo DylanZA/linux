@@ -1071,15 +1071,24 @@ int io_do_iopoll(struct io_ring_ctx *ctx, bool force_nonspin)
 
 bool io_read_can_retarget_rsrc(struct io_kiocb *req)
 {
-	struct file *f;
-	if (!(req->flags & REQ_F_FIXED_FILE))
+	if (req->flags & REQ_F_FIXED_FILE &&
+	    io_file_peek_fixed(req, req->cqe.fd) != req->file)
 		return false;
 
-	f = io_file_peek_fixed(req, req->cqe.fd);
-
-	if (f != req->file)
-		return false;
-
-	/* todo more things? */
 	return true;
+}
+
+bool io_read_fixed_can_retarget_rsrc(struct io_kiocb *req)
+{
+	struct io_ring_ctx *ctx = req->ctx;
+	u16 index;
+
+	if (unlikely(req->buf_index >= ctx->nr_user_bufs))
+		return false;
+
+	index = array_index_nospec(req->buf_index, ctx->nr_user_bufs);
+	if (ctx->user_bufs[index] != req->imu)
+		return false;
+
+	return io_read_can_retarget_rsrc(req);
 }
