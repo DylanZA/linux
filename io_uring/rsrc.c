@@ -295,6 +295,8 @@ static void __io_rsrc_retarget_work(struct io_ring_ctx *ctx)
 		.refs = 0
 	};
 	bool any_waiting;
+	unsigned int poll_refs;
+	u64 start = ktime_get_ns();
 
 	if (!ctx->rsrc_node)
 		return;
@@ -312,13 +314,15 @@ static void __io_rsrc_retarget_work(struct io_ring_ctx *ctx)
 	if (!any_waiting)
 		return;
 
-	data.refs += io_rsrc_retarget_table(ctx, &ctx->cancel_table);
-	data.refs += io_rsrc_retarget_table(ctx, &ctx->cancel_table_locked);
+	poll_refs = io_rsrc_retarget_table(ctx, &ctx->cancel_table);
+	poll_refs += io_rsrc_retarget_table(ctx, &ctx->cancel_table_locked);
 	io_rsrc_retarget_wq(&data);
 
-	ctx->rsrc_cached_refs -= data.refs;
+	ctx->rsrc_cached_refs -= (poll_refs + data.refs);
 	while (unlikely(ctx->rsrc_cached_refs < 0))
 		io_rsrc_refs_refill(ctx);
+
+	trace_io_uring_rsrc_retarget(ctx, poll_refs, data.refs, ktime_get_ns() - start);
 }
 
 void io_rsrc_retarget_work(struct work_struct *work)

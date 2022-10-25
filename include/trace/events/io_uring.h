@@ -684,6 +684,38 @@ TRACE_EVENT(io_uring_local_work_run,
 	TP_printk("ring %p, count %d, loops %u", __entry->ctx, __entry->count, __entry->loops)
 );
 
+/*
+ * io_uring_rsrc_retarget - ran a rsrc retarget
+ *
+ * @ctx:		pointer to a io_uring_ctx
+ * @poll:		how many retargeted that were polling
+ * @wq:			how many retargeted that were in the wq
+ * @time:		how long the operation took in us
+ *
+ */
+TRACE_EVENT(io_uring_rsrc_retarget,
+
+	TP_PROTO(void *ctx, unsigned int poll, unsigned int wq, u64 time),
+
+	TP_ARGS(ctx, poll, wq, time),
+
+	TP_STRUCT__entry (
+		__field(void *,		ctx	)
+		__field(unsigned int,	poll	)
+		__field(unsigned int,	wq	)
+		__field(u64,		time	)
+	),
+
+	TP_fast_assign(
+		__entry->ctx		= ctx;
+		__entry->poll		= poll;
+		__entry->wq		= wq;
+		__entry->time		= time;
+	),
+
+	TP_printk("ring %p, poll %u, wq %u time %llu ns", __entry->ctx, __entry->poll, __entry->wq, __entry->time)
+);
+
 #endif /* _TRACE_IO_URING_H */
 
 /* This part must be outside protection */
