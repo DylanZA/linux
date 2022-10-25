@@ -580,12 +580,11 @@ int io_recvmsg_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	}
 
 
-	if ((req->flags & REQ_F_FIXED_FILE)
-		&& !(req->flags & IORING_RECVSEND_FIXED_BUF)) {
+	if (req->flags & REQ_F_FIXED_FILE)
 		rcv->retarget_fd = req->cqe.fd;
-	} else {
+	else
 		rcv->retarget_fd = -1;
-	}
+
 #ifdef CONFIG_COMPAT
 	if (req->ctx->compat)
 		sr->msg_flags |= MSG_CMSG_COMPAT;
@@ -726,6 +725,12 @@ static int io_recvmsg_multishot(struct socket *sock, struct io_sr_msg *io,
 bool io_recv_can_retarget_rsrc(struct io_kiocb *req)
 {
 	struct io_recv_msg *rcv = io_kiocb_to_cmd(req, struct io_recv_msg);
+	struct io_sr_msg *sr = &rcv->sr;
+
+	if (sr->flags & IORING_RECVSEND_FIXED_BUF) {
+
+	}
+
 	if (rcv->retarget_fd < 0)
 		return false;
 	return io_file_peek_fixed(req, rcv->retarget_fd) == req->file;
