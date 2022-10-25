@@ -70,6 +70,7 @@ const struct io_op_def io_op_defs[] = {
 		.prep_async		= io_readv_prep_async,
 		.cleanup		= io_readv_writev_cleanup,
 		.fail			= io_rw_fail,
+		.can_retarget_rsrc	= io_read_can_retarget_rsrc,
 	},
 	[IORING_OP_WRITEV] = {
 		.needs_file		= 1,
