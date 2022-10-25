@@ -725,11 +725,6 @@ static int io_recvmsg_multishot(struct socket *sock, struct io_sr_msg *io,
 bool io_recv_can_retarget_rsrc(struct io_kiocb *req)
 {
 	struct io_recv_msg *rcv = io_kiocb_to_cmd(req, struct io_recv_msg);
-	struct io_sr_msg *sr = &rcv->sr;
-
-	if (sr->flags & IORING_RECVSEND_FIXED_BUF) {
-
-	}
 
 	if (rcv->retarget_fd < 0)
 		return false;
