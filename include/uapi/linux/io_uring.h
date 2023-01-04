@@ -114,6 +114,7 @@ enum {
 	IOSQE_ASYNC_BIT,
 	IOSQE_BUFFER_SELECT_BIT,
 	IOSQE_CQE_SKIP_SUCCESS_BIT,
+	IOSQE_CQE_SKIP_MIN_EVENTS_BIT,
 };
 
 /*
@@ -133,6 +134,8 @@ enum {
 #define IOSQE_BUFFER_SELECT	(1U << IOSQE_BUFFER_SELECT_BIT)
 /* don't post CQE if request succeeded */
 #define IOSQE_CQE_SKIP_SUCCESS	(1U << IOSQE_CQE_SKIP_SUCCESS_BIT)
+/* don't wake as a result of CQE */
+#define IOSQE_CQE_SKIP_MIN_EVENTS (1U << IOSQE_CQE_SKIP_MIN_EVENTS_BIT)
 
 /*
  * io_uring_setup() flags
@@ -470,6 +473,7 @@ struct io_uring_params {
 #define IORING_FEAT_RSRC_TAGS		(1U << 10)
 #define IORING_FEAT_CQE_SKIP		(1U << 11)
 #define IORING_FEAT_LINKED_FILE		(1U << 12)
+#define IORING_FEAT_CQE_SKIP_MIN_EVENTS	(1U << 13)
 
 /*
  * io_uring_register(2) opcodes and arguments

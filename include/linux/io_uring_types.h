@@ -175,6 +175,7 @@ struct io_submit_state {
 	bool			need_plug;
 	unsigned short		submit_nr;
 	unsigned int		cqes_count;
+	unsigned int		skip_min_events;
 	struct blk_plug		plug;
 	struct io_uring_cqe	cqes[16];
 };
@@ -370,6 +371,7 @@ enum {
 	REQ_F_FORCE_ASYNC_BIT	= IOSQE_ASYNC_BIT,
 	REQ_F_BUFFER_SELECT_BIT	= IOSQE_BUFFER_SELECT_BIT,
 	REQ_F_CQE_SKIP_BIT	= IOSQE_CQE_SKIP_SUCCESS_BIT,
+	REQ_F_CQE_SKIP_MIN_EVENTS_BIT	= IOSQE_CQE_SKIP_MIN_EVENTS_BIT,
 
 	/* first byte is taken by user flags, shift it to not overlap */
 	REQ_F_FAIL_BIT		= 8,
@@ -417,6 +419,7 @@ enum {
 	REQ_F_BUFFER_SELECT	= BIT(REQ_F_BUFFER_SELECT_BIT),
 	/* IOSQE_CQE_SKIP_SUCCESS */
 	REQ_F_CQE_SKIP		= BIT(REQ_F_CQE_SKIP_BIT),
+	REQ_F_CQE_SKIP_MIN_EVENTS = BIT(REQ_F_CQE_SKIP_MIN_EVENTS_BIT),
 
 	/* fail rest of links */
 	REQ_F_FAIL		= BIT(REQ_F_FAIL_BIT),

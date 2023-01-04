@@ -106,7 +106,7 @@
 			  IOSQE_IO_HARDLINK | IOSQE_ASYNC)
 
 #define SQE_VALID_FLAGS	(SQE_COMMON_FLAGS | IOSQE_BUFFER_SELECT | \
-			IOSQE_IO_DRAIN | IOSQE_CQE_SKIP_SUCCESS)
+			IOSQE_IO_DRAIN | IOSQE_CQE_SKIP_SUCCESS | IOSQE_CQE_SKIP_MIN_EVENTS)
 
 #define IO_REQ_CLEAN_FLAGS (REQ_F_BUFFER_SELECTED | REQ_F_NEED_CLEANUP | \
 				REQ_F_POLLED | REQ_F_INFLIGHT | REQ_F_CREDS | \
@@ -1455,9 +1455,9 @@ static void __io_submit_flush_completions(struct io_ring_ctx *ctx)
 	wq_list_for_each(node, prev, &state->compl_reqs) {
 		struct io_kiocb *req = container_of(node, struct io_kiocb,
 					    comp_list);
-
-		if (!(req->flags & REQ_F_CQE_SKIP) &&
-		    unlikely(!__io_fill_cqe_req(ctx, req))) {
+		if (req->flags & REQ_F_CQE_SKIP)
+			continue;
+		if (unlikely(!__io_fill_cqe_req(ctx, req))) {
 			if (ctx->task_complete) {
 				spin_lock(&ctx->completion_lock);
 				io_req_cqe_overflow(req);
@@ -1465,6 +1465,8 @@ static void __io_submit_flush_completions(struct io_ring_ctx *ctx)
 			} else {
 				io_req_cqe_overflow(req);
 			}
+		} else if (req->flags & REQ_F_CQE_SKIP_MIN_EVENTS) {
+			state->skip_min_events++;
 		}
 	}
 	__io_cq_unlock_post(ctx);
@@ -2311,6 +2313,7 @@ static void io_submit_state_start(struct io_submit_state *state,
 	state->plug_started = false;
 	state->need_plug = max_ios > 2;
 	state->submit_nr = max_ios;
+	state->skip_min_events = 0;
 	/* set only head, no need to init link_last in advance */
 	state->link.head = NULL;
 }
@@ -3350,6 +3353,10 @@ SYSCALL_DEFINE6(io_uring_enter, unsigned int, fd, u32, to_submit,
 		if (flags & IORING_ENTER_GETEVENTS) {
 			if (ctx->syscall_iopoll)
 				goto iopoll_locked;
+
+			/* don't return for skip wakes just completed */
+			min_complete += ctx->submit_state.skip_min_events;
+
 			/*
 			 * Ignore errors, we'll soon call io_cqring_wait() and
 			 * it should handle ownership problems if any.
@@ -3665,7 +3672,7 @@ static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 			IORING_FEAT_POLL_32BITS | IORING_FEAT_SQPOLL_NONFIXED |
 			IORING_FEAT_EXT_ARG | IORING_FEAT_NATIVE_WORKERS |
 			IORING_FEAT_RSRC_TAGS | IORING_FEAT_CQE_SKIP |
-			IORING_FEAT_LINKED_FILE;
+			IORING_FEAT_LINKED_FILE | IORING_FEAT_CQE_SKIP_MIN_EVENTS;
 
 	if (copy_to_user(params, p, sizeof(*p))) {
 		ret = -EFAULT;
