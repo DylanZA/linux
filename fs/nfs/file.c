@@ -56,6 +56,7 @@ int nfs_check_flags(int flags)
 }
 EXPORT_SYMBOL_GPL(nfs_check_flags);
 
+int nfs_enable_nowait = 1;
 /*
  * Open file
  */
@@ -75,7 +76,7 @@ nfs_file_open(struct inode *inode, struct file *filp)
 	if (res == 0) {
 		filp->f_mode |= FMODE_CAN_ODIRECT;
 		/* flag NOWAIT on read-only files only */
-		if (!(filp->f_mode & FMODE_WRITE))
+		if (READ_ONCE(nfs_enable_nowait) && !(filp->f_mode & FMODE_WRITE))
 			filp->f_mode |= FMODE_NOWAIT;
 	}
 	return res;
