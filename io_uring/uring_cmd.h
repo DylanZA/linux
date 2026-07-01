@@ -3,6 +3,8 @@
 #include <linux/io_uring/cmd.h>
 #include <linux/io_uring_types.h>
 
+struct io_cancel_data;
+
 struct io_async_cmd {
 	struct iou_vec			vec;
 	struct io_uring_sqe		sqes[2];
@@ -15,6 +17,8 @@ void io_uring_cmd_cleanup(struct io_kiocb *req);
 
 bool io_uring_try_cancel_uring_cmd(struct io_ring_ctx *ctx,
 				   struct io_uring_task *tctx, bool cancel_all);
+int io_uring_cmd_cancel(struct io_ring_ctx *ctx, struct io_cancel_data *cd,
+			unsigned int issue_flags);
 
 bool io_uring_cmd_post_mshot_cqe32(struct io_uring_cmd *cmd,
 				   unsigned int issue_flags,

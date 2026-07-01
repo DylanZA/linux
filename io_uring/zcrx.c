@@ -5,10 +5,13 @@
 #include <linux/mm.h>
 #include <linux/nospec.h>
 #include <linux/io_uring.h>
+#include <linux/io_uring/cmd.h>
+#include <linux/io_uring/zcrx_cmd.h>
 #include <linux/netdevice.h>
 #include <linux/rtnetlink.h>
 #include <linux/skbuff_ref.h>
 #include <linux/anon_inodes.h>
+#include <linux/sort.h>
 
 #include <net/page_pool/helpers.h>
 #include <net/page_pool/memory_provider.h>
@@ -339,7 +342,14 @@ static void zcrx_sync_for_device(struct page_pool *pp, struct io_zcrx_ifq *zcrx,
 struct io_zcrx_args {
 	struct io_kiocb		*req;
 	struct io_zcrx_ifq	*ifq;
+	struct io_uring_cqe	*last_cqe;
+	struct net_iov		*last_niov;
+	u64			last_area_end;
+	u64			last_stream_end;
 	unsigned		nr_skbs;
+	u64			stream_offset;
+	size_t			stream_done;
+	bool			report_stream_offset;
 };
 
 static const struct memory_provider_ops io_uring_pp_zc_ops;
@@ -1227,6 +1237,19 @@ static void zcrx_send_notif(struct io_zcrx_ifq *ifq, unsigned type)
 	io_req_task_work_add(req);
 }
 
+static int io_zcrx_netmem_cmp(const void *a, const void *b)
+{
+	unsigned int a_idx = net_iov_idx(netmem_to_net_iov(*(const netmem_ref *)a));
+	unsigned int b_idx = net_iov_idx(netmem_to_net_iov(*(const netmem_ref *)b));
+
+	return a_idx < b_idx ? 1 : a_idx > b_idx ? -1 : 0;
+}
+
+static void io_zcrx_sort_netmems(netmem_ref *netmems, unsigned int count)
+{
+	sort(netmems, count, sizeof(*netmems), io_zcrx_netmem_cmp, NULL);
+}
+
 static netmem_ref io_pp_zc_alloc_netmems(struct page_pool *pp, gfp_t gfp)
 {
 	struct io_zcrx_ifq *ifq = io_pp_to_ifq(pp);
@@ -1248,6 +1271,12 @@ static netmem_ref io_pp_zc_alloc_netmems(struct page_pool *pp, gfp_t gfp)
 		return 0;
 	}
 out_return:
+	/*
+	 * page_pool pops this cache from the end; hand out adjacent area pages
+	 * in ascending order so drivers can build contiguous multi-page RX
+	 * buffers.
+	 */
+	io_zcrx_sort_netmems(netmems, allocated);
 	zcrx_sync_for_device(pp, ifq, netmems, allocated);
 	allocated--;
 	pp->alloc.count += allocated;
@@ -1453,14 +1482,31 @@ int io_zcrx_ctrl(struct io_ring_ctx *ctx, void __user *arg, unsigned nr_args)
 	return -EOPNOTSUPP;
 }
 
-static bool io_zcrx_queue_cqe(struct io_kiocb *req, struct net_iov *niov,
-			      struct io_zcrx_ifq *ifq, int off, int len)
+static bool io_zcrx_queue_cqe(struct io_zcrx_args *args,
+			      struct net_iov *niov, int off, int len, u64 aux)
 {
+	struct io_zcrx_ifq *ifq = args->ifq;
+	struct io_kiocb *req = args->req;
 	struct io_ring_ctx *ctx = req->ctx;
 	struct io_uring_zcrx_cqe *rcqe;
 	struct io_zcrx_area *area;
 	struct io_uring_cqe *cqe;
 	u64 offset;
+
+	area = io_zcrx_iov_to_area(niov);
+	offset = off + (net_iov_idx(niov) << ifq->niov_shift);
+	offset += (u64)area->area_id << IORING_ZCRX_AREA_SHIFT;
+
+	if (args->last_cqe &&
+	    net_iov_idx(niov) == net_iov_idx(args->last_niov) + 1 &&
+	    args->last_area_end == offset &&
+	    (!args->report_stream_offset || args->last_stream_end == aux) &&
+	    args->last_cqe->res <= INT_MAX - len) {
+		args->last_cqe->res += len;
+		args->last_area_end += len;
+		args->last_stream_end += len;
+		return true;
+	}
 
 	if (!io_defer_get_uncommited_cqe(ctx, &cqe))
 		return false;
@@ -1471,11 +1517,13 @@ static bool io_zcrx_queue_cqe(struct io_kiocb *req, struct net_iov *niov,
 	if (ctx->flags & IORING_SETUP_CQE_MIXED)
 		cqe->flags |= IORING_CQE_F_32;
 
-	area = io_zcrx_iov_to_area(niov);
-	offset = off + (net_iov_idx(niov) << ifq->niov_shift);
 	rcqe = (struct io_uring_zcrx_cqe *)(cqe + 1);
-	rcqe->off = offset + ((u64)area->area_id << IORING_ZCRX_AREA_SHIFT);
-	rcqe->__pad = 0;
+	rcqe->off = offset;
+	rcqe->__pad = aux;
+	args->last_cqe = cqe;
+	args->last_niov = niov;
+	args->last_area_end = offset + len;
+	args->last_stream_end = aux + len;
 	return true;
 }
 
@@ -1541,10 +1589,11 @@ static ssize_t io_copy_page(struct io_copy_cache *cc, struct page *src_page,
 	return copied;
 }
 
-static ssize_t io_zcrx_copy_chunk(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
-				  struct page *src_page, unsigned int src_offset,
-				  size_t len)
+static ssize_t io_zcrx_copy_chunk(struct io_zcrx_args *args,
+				  struct page *src_page,
+				  unsigned int src_offset, size_t len)
 {
+	struct io_zcrx_ifq *ifq = args->ifq;
 	size_t copied = 0;
 	int ret = 0;
 
@@ -1565,13 +1614,21 @@ static ssize_t io_zcrx_copy_chunk(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 
 		n = io_copy_page(&cc, src_page, src_offset, len);
 
-		if (!io_zcrx_queue_cqe(req, niov, ifq, 0, n)) {
+		if (!io_zcrx_queue_cqe(args, niov, 0, n,
+				       args->report_stream_offset ?
+				       args->stream_offset + args->stream_done + copied :
+				       0)) {
 			io_zcrx_return_niov(niov);
 			ret = -ENOSPC;
 			break;
 		}
 
 		io_zcrx_get_niov_uref(niov);
+		if (ifq->notif_stats) {
+			zcrx_stat_add(&ifq->notif_stats->copy_count, 1);
+			zcrx_stat_add(&ifq->notif_stats->copy_bytes, n);
+		}
+		zcrx_send_notif(ifq, ZCRX_NOTIF_COPY);
 		src_offset += n;
 		len -= n;
 		copied += n;
@@ -1580,32 +1637,23 @@ static ssize_t io_zcrx_copy_chunk(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 	return copied ? copied : ret;
 }
 
-static int io_zcrx_copy_frag(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
+static int io_zcrx_copy_frag(struct io_zcrx_args *args,
 			     const skb_frag_t *frag, int off, int len)
 {
 	struct page *page = skb_frag_page(frag);
-	int ret;
 
-	ret = io_zcrx_copy_chunk(req, ifq, page, off + skb_frag_off(frag), len);
-	if (ret > 0) {
-		if (ifq->notif_stats) {
-			zcrx_stat_add(&ifq->notif_stats->copy_count, 1);
-			zcrx_stat_add(&ifq->notif_stats->copy_bytes, ret);
-		}
-		zcrx_send_notif(ifq, ZCRX_NOTIF_COPY);
-	}
-
-	return ret;
+	return io_zcrx_copy_chunk(args, page, off + skb_frag_off(frag), len);
 }
 
-static int io_zcrx_recv_frag(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
+static int io_zcrx_recv_frag(struct io_zcrx_args *args,
 			     const skb_frag_t *frag, int off, int len)
 {
+	struct io_zcrx_ifq *ifq = args->ifq;
 	struct net_iov *niov;
 	struct page_pool *pp;
 
 	if (unlikely(!skb_frag_is_net_iov(frag)))
-		return io_zcrx_copy_frag(req, ifq, frag, off, len);
+		return io_zcrx_copy_frag(args, frag, off, len);
 
 	niov = netmem_to_net_iov(frag->netmem);
 	pp = niov->desc.pp;
@@ -1613,7 +1661,9 @@ static int io_zcrx_recv_frag(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 	if (!pp || pp->mp_ops != &io_uring_pp_zc_ops || io_pp_to_ifq(pp) != ifq)
 		return -EFAULT;
 
-	if (!io_zcrx_queue_cqe(req, niov, ifq, off + skb_frag_off(frag), len))
+	if (!io_zcrx_queue_cqe(args, niov, off + skb_frag_off(frag), len,
+			       args->report_stream_offset ?
+			       args->stream_offset + args->stream_done : 0))
 		return -ENOSPC;
 
 	/*
@@ -1630,8 +1680,6 @@ io_zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 		 unsigned int offset, size_t len)
 {
 	struct io_zcrx_args *args = desc->arg.data;
-	struct io_zcrx_ifq *ifq = args->ifq;
-	struct io_kiocb *req = args->req;
 	struct sk_buff *frag_iter;
 	unsigned start, start_off = offset;
 	int i, copy, end, off;
@@ -1654,7 +1702,7 @@ io_zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 		size_t to_copy;
 
 		to_copy = min_t(size_t, skb_headlen(skb) - offset, len);
-		copied = io_zcrx_copy_chunk(req, ifq, virt_to_page(skb->data),
+		copied = io_zcrx_copy_chunk(args, virt_to_page(skb->data),
 					    offset_in_page(skb->data) + offset,
 					    to_copy);
 		if (copied < 0) {
@@ -1663,6 +1711,7 @@ io_zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 		}
 		offset += copied;
 		len -= copied;
+		args->stream_done += copied;
 		if (!len)
 			goto out;
 		if (offset != skb_headlen(skb))
@@ -1686,12 +1735,13 @@ io_zcrx_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 				copy = len;
 
 			off = offset - start;
-			ret = io_zcrx_recv_frag(req, ifq, frag, off, copy);
+			ret = io_zcrx_recv_frag(args, frag, off, copy);
 			if (ret < 0)
 				goto out;
 
 			offset += ret;
 			len -= ret;
+			args->stream_done += ret;
 			if (len == 0 || ret != copy)
 				goto out;
 		}
@@ -1790,3 +1840,254 @@ int io_zcrx_recv(struct io_kiocb *req, struct io_zcrx_ifq *ifq,
 	sock_rps_record_flow(sk);
 	return io_zcrx_tcp_recvmsg(req, ifq, sk, flags, issue_flags, len);
 }
+
+int io_uring_cmd_zcrx_get(struct io_uring_cmd *cmd, u32 ifq_idx,
+			  struct io_uring_zcrx_ifq **opaque_ifq)
+{
+	struct io_kiocb *req = cmd_to_io_kiocb(cmd);
+	struct io_zcrx_ifq *ifq;
+
+	if (!(req->ctx->flags & (IORING_SETUP_CQE32 | IORING_SETUP_CQE_MIXED)))
+		return -EINVAL;
+
+	xa_lock(&req->ctx->zcrx_ctxs);
+	ifq = xa_load(&req->ctx->zcrx_ctxs, ifq_idx);
+	if (ifq && !refcount_inc_not_zero(&ifq->refs))
+		ifq = NULL;
+	xa_unlock(&req->ctx->zcrx_ctxs);
+	if (!ifq)
+		return -ENXIO;
+
+	*opaque_ifq = (struct io_uring_zcrx_ifq *)ifq;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_zcrx_get);
+
+void io_uring_cmd_zcrx_put(struct io_uring_zcrx_ifq *opaque_ifq)
+{
+	if (!opaque_ifq)
+		return;
+	io_put_zcrx_ifq((struct io_zcrx_ifq *)opaque_ifq);
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_zcrx_put);
+
+static void io_zcrx_peek_page(void *dst, struct page *page,
+			      unsigned int offset, unsigned int len)
+{
+	unsigned int copied = 0;
+
+	while (len) {
+		unsigned int n = min_t(unsigned int, len,
+					   PAGE_SIZE - offset_in_page(offset));
+		void *addr = kmap_local_page(page + offset / PAGE_SIZE);
+
+		memcpy((char *)dst + copied,
+		       (char *)addr + offset_in_page(offset), n);
+		kunmap_local(addr);
+		offset += n;
+		copied += n;
+		len -= n;
+	}
+}
+
+static int io_zcrx_peek_skb(struct io_zcrx_ifq *ifq, struct sk_buff *skb,
+			    unsigned int offset, void *dst, unsigned int len)
+{
+	struct sk_buff *frag_iter;
+	unsigned int copied = 0, start;
+	int i;
+
+	if (offset < skb_headlen(skb)) {
+		unsigned int n = min_t(unsigned int, len,
+					   skb_headlen(skb) - offset);
+
+		memcpy(dst, skb->data + offset, n);
+		copied += n;
+		offset += n;
+		len -= n;
+	}
+	start = skb_headlen(skb);
+
+	for (i = 0; len && i < skb_shinfo(skb)->nr_frags; i++) {
+		const skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+		unsigned int end = start + skb_frag_size(frag);
+		struct page *page;
+		unsigned int n, off;
+
+		if (offset >= end) {
+			start = end;
+			continue;
+		}
+		off = offset - start;
+		n = min_t(unsigned int, len, end - offset);
+		if (skb_frag_is_net_iov(frag)) {
+			struct net_iov *niov = netmem_to_net_iov(frag->netmem);
+			struct page_pool *pp = niov->desc.pp;
+
+			if (!ifq->kern_readable || !pp ||
+			    pp->mp_ops != &io_uring_pp_zc_ops ||
+			    io_pp_to_ifq(pp) != ifq)
+				return -EFAULT;
+			page = io_zcrx_iov_page(niov);
+		} else {
+			page = skb_frag_page(frag);
+		}
+		io_zcrx_peek_page((char *)dst + copied, page,
+				  skb_frag_off(frag) + off, n);
+		copied += n;
+		offset += n;
+		len -= n;
+		start = end;
+	}
+
+	skb_walk_frags(skb, frag_iter) {
+		unsigned int end = start + frag_iter->len;
+		int ret;
+
+		if (!len)
+			break;
+		if (offset >= end) {
+			start = end;
+			continue;
+		}
+		ret = io_zcrx_peek_skb(ifq, frag_iter, offset - start,
+				       (char *)dst + copied,
+					  min_t(unsigned int, len,
+						end - offset));
+		if (ret < 0)
+			return ret;
+		copied += ret;
+		offset += ret;
+		len -= ret;
+		start = end;
+	}
+	return copied;
+}
+
+int io_uring_cmd_zcrx_peek(struct io_uring_zcrx_ifq *opaque_ifq,
+			   struct socket *sock, void *buf, unsigned int len)
+{
+	struct io_zcrx_ifq *ifq = (struct io_zcrx_ifq *)opaque_ifq;
+	struct sock *sk = sock->sk;
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct sk_buff *skb;
+	u32 seq, off;
+	unsigned int copied = 0;
+	int ret = -EAGAIN;
+
+	if (READ_ONCE(sk->sk_prot)->recvmsg != tcp_recvmsg)
+		return -EPROTONOSUPPORT;
+	if (!len)
+		return 0;
+	bh_lock_sock(sk);
+	if (sock_owned_by_user(sk))
+		goto out;
+	seq = tp->copied_seq;
+	/* tcp_recv_skb() may unlink skbs passed by its sequence cursor. */
+	skb_queue_walk(&sk->sk_receive_queue, skb) {
+		unsigned int n;
+
+		if (before(seq, TCP_SKB_CB(skb)->seq))
+			break;
+		off = seq - TCP_SKB_CB(skb)->seq;
+		if (unlikely(TCP_SKB_CB(skb)->tcp_flags & TCPHDR_SYN)) {
+			pr_err_once("%s: found a SYN, please report !\n", __func__);
+			off--;
+		}
+		if (off >= skb->len) {
+			if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN)
+				ret = 0;
+			continue;
+		}
+		n = min_t(unsigned int, len - copied, skb->len - off);
+		ret = io_zcrx_peek_skb(ifq, skb, off,
+				       (char *)buf + copied, n);
+		if (ret < 0)
+			goto out;
+		copied += ret;
+		seq += ret;
+		if (ret != n || copied == len)
+			break;
+	}
+	if (!copied && (sock_flag(sk, SOCK_DONE) ||
+			READ_ONCE(sk->sk_shutdown) & RCV_SHUTDOWN))
+		ret = 0;
+	ret = copied ? copied : ret;
+out:
+	bh_unlock_sock(sk);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_zcrx_peek);
+
+static int io_zcrx_consume_skb(read_descriptor_t *desc, struct sk_buff *skb,
+			       unsigned int offset, size_t len)
+{
+	len = min_t(size_t, len, desc->count);
+	desc->count -= len;
+	return len;
+}
+
+int io_uring_cmd_zcrx_consume(struct socket *sock, unsigned int len)
+{
+	struct sock *sk = sock->sk;
+	read_descriptor_t desc = { .count = len };
+	int ret = -EAGAIN;
+
+	if (READ_ONCE(sk->sk_prot)->recvmsg != tcp_recvmsg)
+		return -EPROTONOSUPPORT;
+	bh_lock_sock(sk);
+	if (!sock_owned_by_user(sk))
+		ret = tcp_read_sock(sk, &desc, io_zcrx_consume_skb);
+	bh_unlock_sock(sk);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_zcrx_consume);
+
+int io_uring_cmd_zcrx_recv(struct io_uring_cmd *cmd,
+			   struct io_uring_zcrx_ifq *opaque_ifq,
+			   struct socket *sock, unsigned int len,
+			   u64 stream_offset, unsigned int issue_flags)
+{
+	struct io_zcrx_ifq *ifq = (struct io_zcrx_ifq *)opaque_ifq;
+	struct io_kiocb *req = cmd_to_io_kiocb(cmd);
+	struct sock *sk = sock->sk;
+	struct io_zcrx_args args = {
+		.req = req,
+		.ifq = ifq,
+		.stream_offset = stream_offset,
+		.report_stream_offset = true,
+	};
+	read_descriptor_t rd_desc = {
+		.count = len,
+		.arg.data = &args,
+	};
+	const struct proto *prot = READ_ONCE(sk->sk_prot);
+	int ret;
+
+	(void)issue_flags;
+
+	if (prot->recvmsg != tcp_recvmsg)
+		return -EPROTONOSUPPORT;
+	if (!len)
+		return 0;
+
+	sock_rps_record_flow(sk);
+	bh_lock_sock(sk);
+	if (sock_owned_by_user(sk)) {
+		bh_unlock_sock(sk);
+		return -EAGAIN;
+	}
+	ret = tcp_read_sock(sk, &rd_desc, io_zcrx_recv_skb);
+	if (!ret) {
+		if (sk->sk_err)
+			ret = sock_error(sk);
+		else if (sk->sk_shutdown & RCV_SHUTDOWN ||
+			 READ_ONCE(sk->sk_state) == TCP_CLOSE)
+			ret = -ENOTCONN;
+		else
+			ret = -EAGAIN;
+	}
+	bh_unlock_sock(sk);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_zcrx_recv);

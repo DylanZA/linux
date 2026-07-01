@@ -26366,6 +26366,16 @@ L:	linux-media@vger.kernel.org
 S:	Odd Fixes
 F:	drivers/media/dvb-frontends/tc90522*
 
+TCPFS FILESYSTEM
+M:	Dylan Yudaken <dyudaken@gmail.com>
+L:	linux-fsdevel@vger.kernel.org
+S:	Maintained
+F:	Documentation/filesystems/tcpfs.rst
+F:	fs/tcpfs/
+F:	include/linux/tcpfs.h
+F:	include/uapi/linux/tcpfs.h
+F:	tcpfs_tools/
+
 TCP LOW PRIORITY MODULE
 M:	"Wong Hoi Sing, Edison" <hswong3i@gmail.com>
 M:	"Hung Hing Lun, Mike" <hlhung3i@gmail.com>

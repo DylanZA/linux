@@ -1,0 +1,9 @@
+/.libbpf/
+/__pycache__/
+/tcpfs_bench_read
+/tcpfs_nfs.bpf.o
+/tcpfs_nfs_loader
+/tcpfs_s3.bpf.o
+/tcpfs_s3_loader
+/tcpfs_uring_read_smoke
+/tcpfs_zcrx.o

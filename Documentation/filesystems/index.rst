@@ -117,6 +117,7 @@ Documentation for filesystem implementations.
    spufs/index
    squashfs
    sysfs
+   tcpfs
    tmpfs
    ubifs
    ubifs-authentication

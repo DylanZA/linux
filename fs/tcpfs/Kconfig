@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config TCPFS_FS
+	tristate "TCP-backed BPF callback filesystem"
+	depends on INET
+	depends on BPF_SYSCALL
+	depends on BPF_JIT
+	help
+	  tcpfs is an experimental read-only filesystem that delegates
+	  protocol framing and result decoding to BPF struct_ops callbacks
+	  and transports requests over TCP.
+
+	  If unsure, say N.
