@@ -437,6 +437,57 @@ void io_uring_cmd_commit_cqes(struct io_uring_cmd *cmd)
 EXPORT_SYMBOL_GPL(io_uring_cmd_commit_cqes);
 
 /*
+ * Acquire the provided-buffer ring behind @buf_group for issuing commands.
+ * Mirrors io_pbuf_cmd_acquire() through the command object.
+ */
+int io_uring_cmd_pbuf_acquire(struct io_uring_cmd *cmd, u16 buf_group,
+			      unsigned int issue_flags)
+{
+	return io_pbuf_cmd_acquire(cmd_to_io_kiocb(cmd), buf_group,
+				   issue_flags);
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_pbuf_acquire);
+
+/*
+ * Release command ownership of a provided-buffer ring acquired above.
+ */
+void io_uring_cmd_pbuf_release(struct io_uring_cmd *cmd, u16 buf_group,
+			       unsigned int issue_flags)
+{
+	io_pbuf_cmd_release(cmd_to_io_kiocb(cmd), buf_group, issue_flags);
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_pbuf_release);
+
+/*
+ * Reserve one pinned PAGE_SIZE provided buffer from a command-owned group.
+ */
+int io_uring_cmd_pbuf_reserve(struct io_uring_cmd *cmd, u16 buf_group,
+			      struct io_uring_cmd_pbuf *pbuf,
+			      unsigned int issue_flags)
+{
+	return io_pbuf_cmd_reserve(cmd_to_io_kiocb(cmd), buf_group, pbuf,
+				   issue_flags);
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_pbuf_reserve);
+
+/*
+ * Return a reserved provided buffer to its group, unpinning its page and
+ * releasing the memory accounting charge taken at reserve time.
+ */
+void io_uring_cmd_pbuf_put(struct io_uring_cmd *cmd,
+			   struct io_uring_cmd_pbuf *pbuf)
+{
+	struct io_kiocb *req = cmd_to_io_kiocb(cmd);
+
+	if (!pbuf->page)
+		return;
+	io_unaccount_mem(req->ctx->user, req->ctx->mm_account, 1);
+	unpin_user_page(pbuf->page);
+	pbuf->page = NULL;
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_pbuf_put);
+
+/*
  * Work with io_uring_mshot_cmd_post_cqe() together for committing the
  * provided buffer upfront
  */

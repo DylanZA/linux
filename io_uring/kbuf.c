@@ -9,6 +9,7 @@
 #include <linux/poll.h>
 #include <linux/vmalloc.h>
 #include <linux/io_uring.h>
+#include <linux/io_uring/cmd.h>
 
 #include <uapi/linux/io_uring.h>
 
@@ -16,6 +17,7 @@
 #include "opdef.h"
 #include "kbuf.h"
 #include "memmap.h"
+#include "rsrc.h"
 
 /* BIDs are addressed by a 16-bit field in a CQE */
 #define MAX_BIDS_PER_BGID (1 << 16)
@@ -726,12 +728,116 @@ int io_unregister_pbuf_ring(struct io_ring_ctx *ctx, void __user *arg)
 		return -ENOENT;
 	if (!(bl->flags & IOBL_BUF_RING))
 		return -EINVAL;
+	if (bl->cmd_owner)
+		return -EBUSY;
 
 	scoped_guard(mutex, &ctx->mmap_lock)
 		xa_erase(&ctx->io_bl_xa, bl->bgid);
 
 	io_put_bl(ctx, bl);
 	return 0;
+}
+
+/*
+ * Acquire exclusive ownership of a provided-buffer ring for issuing commands.
+ * Only one command may own @bgid at a time so that reserve/put on individual
+ * entries cannot race a concurrent user of the same group.
+ *
+ * Return: 0 on success, or -EINVAL/-EBUSY.
+ */
+int io_pbuf_cmd_acquire(struct io_kiocb *req, u16 bgid,
+			unsigned int issue_flags)
+{
+	struct io_buffer_list *bl;
+	int ret = 0;
+
+	io_ring_submit_lock(req->ctx, issue_flags);
+	bl = io_buffer_get_list(req->ctx, bgid);
+	if (!bl || !(bl->flags & IOBL_BUF_RING) || (bl->flags & IOBL_INC))
+		ret = -EINVAL;
+	else if (bl->cmd_owner && bl->cmd_owner != req)
+		ret = -EBUSY;
+	else
+		bl->cmd_owner = req;
+	io_ring_submit_unlock(req->ctx, issue_flags);
+	return ret;
+}
+
+/*
+ * Release command ownership of a provided-buffer ring acquired with
+ * io_pbuf_cmd_acquire(). Safe to call even if acquisition never matched.
+ */
+void io_pbuf_cmd_release(struct io_kiocb *req, u16 bgid,
+			 unsigned int issue_flags)
+{
+	struct io_buffer_list *bl;
+
+	io_ring_submit_lock(req->ctx, issue_flags);
+	bl = io_buffer_get_list(req->ctx, bgid);
+	if (WARN_ON_ONCE(!bl || bl->cmd_owner != req))
+		goto out;
+	bl->cmd_owner = NULL;
+out:
+	io_ring_submit_unlock(req->ctx, issue_flags);
+}
+
+/*
+ * Reserve one PAGE_SIZE buffer from the command-owned provided-buffer ring and
+ * pin its page into the requester's memory accounting. The caller owns the
+ * returned pbuf until io_pbuf_cmd_put(); consuming one advances the ring head.
+ *
+ * Return: 0 on success (page and bid populated in @pbuf), or a negative errno.
+ */
+int io_pbuf_cmd_reserve(struct io_kiocb *req, u16 bgid,
+			struct io_uring_cmd_pbuf *pbuf,
+			unsigned int issue_flags)
+{
+	struct io_uring_buf_ring *br;
+	struct io_buffer_list *bl;
+	struct io_uring_buf *buf;
+	unsigned long addr;
+	struct page *page;
+	__u16 tail;
+	int ret;
+
+	memset(pbuf, 0, sizeof(*pbuf));
+	io_ring_submit_lock(req->ctx, issue_flags);
+	bl = io_buffer_get_list(req->ctx, bgid);
+	if (!bl || bl->cmd_owner != req) {
+		ret = -EPERM;
+		goto out_unlock;
+	}
+	br = bl->buf_ring;
+	/* Pair with userspace publishing new entries through br->tail. */
+	tail = smp_load_acquire(&br->tail);
+	if (tail == bl->head) {
+		ret = -ENOBUFS;
+		goto out_unlock;
+	}
+	buf = io_ring_head_to_buf(br, bl->head, bl->mask);
+	addr = READ_ONCE(buf->addr);
+	if (!IS_ALIGNED(addr, PAGE_SIZE) || READ_ONCE(buf->len) != PAGE_SIZE ||
+	    !access_ok((void __user *)addr, PAGE_SIZE)) {
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+	ret = pin_user_pages_fast(addr, 1, FOLL_WRITE | FOLL_LONGTERM, &page);
+	if (ret != 1) {
+		ret = ret < 0 ? ret : -EFAULT;
+		goto out_unlock;
+	}
+	ret = io_account_mem(req->ctx->user, req->ctx->mm_account, 1);
+	if (ret) {
+		unpin_user_page(page);
+		goto out_unlock;
+	}
+	pbuf->page = page;
+	pbuf->bid = READ_ONCE(buf->bid);
+	bl->head++;
+	ret = 0;
+out_unlock:
+	io_ring_submit_unlock(req->ctx, issue_flags);
+	return ret;
 }
 
 int io_register_pbuf_status(struct io_ring_ctx *ctx, void __user *arg)

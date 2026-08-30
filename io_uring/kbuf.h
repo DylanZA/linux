@@ -38,9 +38,12 @@ struct io_buffer_list {
 	 * buffer is done and head is incremented to the next buffer.
 	 */
 	__u32 min_left_sub_one;
+	struct io_kiocb *cmd_owner;
 
 	struct io_mapped_region region;
 };
+
+struct io_uring_cmd_pbuf;
 
 struct io_buffer {
 	struct list_head list;
@@ -93,6 +96,13 @@ bool io_kbuf_commit(struct io_kiocb *req,
 
 struct io_mapped_region *io_pbuf_get_region(struct io_ring_ctx *ctx,
 					    unsigned int bgid);
+int io_pbuf_cmd_acquire(struct io_kiocb *req, u16 bgid,
+			unsigned int issue_flags);
+void io_pbuf_cmd_release(struct io_kiocb *req, u16 bgid,
+			 unsigned int issue_flags);
+int io_pbuf_cmd_reserve(struct io_kiocb *req, u16 bgid,
+			struct io_uring_cmd_pbuf *pbuf,
+			unsigned int issue_flags);
 
 static inline bool io_kbuf_recycle_ring(struct io_kiocb *req,
 					struct io_buffer_list *bl)

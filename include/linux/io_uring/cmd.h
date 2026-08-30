@@ -20,6 +20,11 @@ struct io_uring_cmd {
 	u8		unused[8];
 };
 
+struct io_uring_cmd_pbuf {
+	struct page	*page;
+	u16		bid;
+};
+
 #define io_uring_sqe128_cmd(sqe, type)	({					\
 	BUILD_BUG_ON(sizeof(type) > ((2 * sizeof(struct io_uring_sqe)) -	\
 				     offsetof(struct io_uring_sqe, cmd)));	\
@@ -108,6 +113,31 @@ bool io_uring_cmd_post_cqe32(struct io_uring_cmd *ioucmd, s32 res, u32 flags,
  */
 void io_uring_cmd_commit_cqes(struct io_uring_cmd *ioucmd);
 
+/**
+ * io_uring_cmd_pbuf_acquire() - Take exclusive ownership of a pbuf group.
+ */
+int io_uring_cmd_pbuf_acquire(struct io_uring_cmd *ioucmd, u16 buf_group,
+			      unsigned int issue_flags);
+
+/**
+ * io_uring_cmd_pbuf_release() - Release a command-owned provided-buffer group.
+ */
+void io_uring_cmd_pbuf_release(struct io_uring_cmd *ioucmd, u16 buf_group,
+			       unsigned int issue_flags);
+
+/**
+ * io_uring_cmd_pbuf_reserve() - Pin one PAGE_SIZE buffer from a command group.
+ */
+int io_uring_cmd_pbuf_reserve(struct io_uring_cmd *ioucmd, u16 buf_group,
+			      struct io_uring_cmd_pbuf *pbuf,
+			      unsigned int issue_flags);
+
+/**
+ * io_uring_cmd_pbuf_put() - Return a reserved buffer, unpinning its page.
+ */
+void io_uring_cmd_pbuf_put(struct io_uring_cmd *ioucmd,
+			   struct io_uring_cmd_pbuf *pbuf);
+
 #else
 static inline int
 io_uring_cmd_import_fixed(u64 ubuf, unsigned long len, int rw,
@@ -162,6 +192,31 @@ static inline void io_uring_cmd_commit_cqes(struct io_uring_cmd *ioucmd)
 {
 }
 
+static inline int
+io_uring_cmd_pbuf_acquire(struct io_uring_cmd *ioucmd, u16 buf_group,
+			  unsigned int issue_flags)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline void
+io_uring_cmd_pbuf_release(struct io_uring_cmd *ioucmd, u16 buf_group,
+			  unsigned int issue_flags)
+{
+}
+
+static inline int
+io_uring_cmd_pbuf_reserve(struct io_uring_cmd *ioucmd, u16 buf_group,
+			  struct io_uring_cmd_pbuf *pbuf,
+			  unsigned int issue_flags)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline void io_uring_cmd_pbuf_put(struct io_uring_cmd *ioucmd,
+					 struct io_uring_cmd_pbuf *pbuf)
+{
+}
 #endif
 
 static inline struct io_uring_cmd *io_uring_cmd_from_tw(struct io_tw_req tw_req)
