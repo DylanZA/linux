@@ -1776,6 +1776,12 @@ static inline void unlock_sock_fast(struct sock *sk, bool slow)
 
 void sockopt_lock_sock(struct sock *sk);
 void sockopt_release_sock(struct sock *sk);
+
+struct dmabuf_token;
+#ifdef CONFIG_PAGE_POOL
+int sock_devmem_dontneed(struct sock *sk, const struct dmabuf_token *tokens,
+			 unsigned int num_tokens);
+#endif
 bool sockopt_ns_capable(struct user_namespace *ns, int cap);
 bool sockopt_capable(int cap);
 

@@ -1083,30 +1083,25 @@ success:
 #define MAX_DONTNEED_TOKENS 128
 #define MAX_DONTNEED_FRAGS 1024
 
-static noinline_for_stack int
-sock_devmem_dontneed(struct sock *sk, sockptr_t optval, unsigned int optlen)
+/*
+ * Return a set of device-memory page fragments to the networking allocator.
+ * Each entry in @tokens describes a consecutive token range published to
+ * userspace; the fragments are removed from the socket's user-frag table and
+ * released back to their page pool.
+ *
+ * Return: the number of fragments successfully returned, or a negative errno.
+ */
+int sock_devmem_dontneed(struct sock *sk, const struct dmabuf_token *tokens,
+			 unsigned int num_tokens)
 {
-	unsigned int num_tokens, i, j, k, netmem_num = 0;
-	struct dmabuf_token *tokens;
+	unsigned int i, j, k, netmem_num = 0;
 	int ret = 0, num_frags = 0;
 	netmem_ref netmems[16];
 
 	if (!sk_is_tcp(sk))
 		return -EBADF;
-
-	if (optlen % sizeof(*tokens) ||
-	    optlen > sizeof(*tokens) * MAX_DONTNEED_TOKENS)
+	if (num_tokens > MAX_DONTNEED_TOKENS)
 		return -EINVAL;
-
-	num_tokens = optlen / sizeof(*tokens);
-	tokens = kvmalloc_objs(*tokens, num_tokens);
-	if (!tokens)
-		return -ENOMEM;
-
-	if (copy_from_sockptr(tokens, optval, optlen)) {
-		kvfree(tokens);
-		return -EFAULT;
-	}
 
 	xa_lock_bh(&sk->sk_user_frags);
 	for (i = 0; i < num_tokens; i++) {
@@ -1137,7 +1132,31 @@ frag_limit_reached:
 	for (k = 0; k < netmem_num; k++)
 		WARN_ON_ONCE(!napi_pp_put_page(netmems[k]));
 
-	kvfree(tokens);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(sock_devmem_dontneed);
+
+/*
+ * Copy a SO_DEVMEM_DONTNEED token array from userspace and return it through
+ * sock_devmem_dontneed(), bounding the request against the shared limits.
+ */
+static noinline_for_stack int
+sock_devmem_dontneed_user(struct sock *sk, sockptr_t optval,
+			  unsigned int optlen)
+{
+	unsigned int num_tokens;
+	struct dmabuf_token *tokens;
+	int ret;
+
+	if (optlen % sizeof(*tokens) ||
+	    optlen > sizeof(*tokens) * MAX_DONTNEED_TOKENS)
+		return -EINVAL;
+	num_tokens = optlen / sizeof(*tokens);
+	tokens = memdup_sockptr(optval, optlen);
+	if (IS_ERR(tokens))
+		return PTR_ERR(tokens);
+	ret = sock_devmem_dontneed(sk, tokens, num_tokens);
+	kfree(tokens);
 	return ret;
 }
 #endif
@@ -1297,7 +1316,7 @@ int sk_setsockopt(struct sock *sk, int level, int optname,
 		}
 #ifdef CONFIG_PAGE_POOL
 	case SO_DEVMEM_DONTNEED:
-		return sock_devmem_dontneed(sk, optval, optlen);
+		return sock_devmem_dontneed_user(sk, optval, optlen);
 #endif
 	case SO_SNDTIMEO_OLD:
 	case SO_SNDTIMEO_NEW:
