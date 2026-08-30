@@ -2493,6 +2493,32 @@ static int tcp_xa_pool_refill(struct sock *sk, struct tcp_xa_pool *p,
 	return k ? 0 : err;
 }
 
+/*
+ * Copy a coalesced readable fragment (a location-not-dmabuf frag that shares a
+ * skb with devmem frags) into the provided receive buffer and describe it as a
+ * DEVMEM_LINEAR cmsg so the receiver can treat every fragment uniformly.
+ *
+ * Return: 0 on success, or a negative errno.
+ */
+static int tcp_copy_dmabuf_frag(const skb_frag_t *frag, unsigned int offset,
+				int len, struct msghdr *msg)
+{
+	struct dmabuf_cmsg dmabuf_cmsg = { .frag_size = len };
+	u32 p_off, p_len, copied;
+	struct page *page;
+	int done = 0;
+
+	skb_frag_foreach_page(frag, skb_frag_off(frag) + offset, len,
+			      page, p_off, p_len, copied) {
+		done += copy_page_to_iter(page, p_off, p_len, &msg->msg_iter);
+		if (done != copied + p_len)
+			return -EFAULT;
+	}
+
+	return put_cmsg_notrunc(msg, SOL_SOCKET, SO_DEVMEM_LINEAR,
+				 sizeof(dmabuf_cmsg), &dmabuf_cmsg);
+}
+
 /* On error, returns the -errno. On success, returns number of bytes sent to the
  * user. May not consume all of @remaining_len.
  */
@@ -2511,11 +2537,6 @@ static int tcp_recvmsg_dmabuf(struct sock *sk, const struct sk_buff *skb,
 	tcp_xa_pool.idx = 0;
 	do {
 		start = skb_headlen(skb);
-
-		if (skb_frags_readable(skb)) {
-			err = -ENODEV;
-			goto out;
-		}
 
 		/* Copy header. */
 		copy = start - offset;
@@ -2550,8 +2571,8 @@ static int tcp_recvmsg_dmabuf(struct sock *sk, const struct sk_buff *skb,
 				goto out;
 		}
 
-		/* after that, send information of dmabuf pages through a
-		 * sequence of cmsg
+		/* Send dma-buf locations and copy any readable frags that were
+		 * coalesced into the same skb while an RX queue changed providers.
 		 */
 		for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 			skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
@@ -2559,30 +2580,30 @@ static int tcp_recvmsg_dmabuf(struct sock *sk, const struct sk_buff *skb,
 			u64 frag_offset;
 			int end;
 
-			/* !skb_frags_readable() should indicate that ALL the
-			 * frags in this skb are dmabuf net_iovs. We're checking
-			 * for that flag above, but also check individual frags
-			 * here. If the tcp stack is not setting
-			 * skb_frags_readable() correctly, we still don't want
-			 * to crash here.
-			 */
-			if (!skb_frag_net_iov(frag)) {
-				net_err_ratelimited("Found non-dmabuf skb with net_iov");
-				err = -ENODEV;
-				goto out;
-			}
-
-			niov = skb_frag_net_iov(frag);
-			if (!net_is_devmem_iov(niov)) {
-				err = -ENODEV;
-				goto out;
-			}
-
 			end = start + skb_frag_size(frag);
 			copy = end - offset;
 
 			if (copy > 0) {
 				copy = min(copy, remaining_len);
+				niov = skb_frag_net_iov(frag);
+				if (!niov) {
+					err = tcp_copy_dmabuf_frag(frag,
+								   offset - start,
+								   copy, msg);
+					if (err)
+						goto out;
+					offset += copy;
+					remaining_len -= copy;
+					sent += copy;
+					if (!remaining_len)
+						goto out;
+					start = end;
+					continue;
+				}
+				if (!net_is_devmem_iov(niov)) {
+					err = -ENODEV;
+					goto out;
+				}
 
 				frag_offset = net_iov_virtual_addr(niov) +
 					      skb_frag_off(frag) + offset -
