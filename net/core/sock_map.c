@@ -452,6 +452,34 @@ static long sock_map_delete_elem(struct bpf_map *map, void *key)
 	return __sock_map_delete(stab, NULL, psk);
 }
 
+/*
+ * Remove the socket stored at @key from a SOCKMAP and return it, transferring
+ * the caller into ownership of the held reference. Returns -ENOENT when the
+ * slot is empty.
+ */
+struct sock *sock_map_delete_elem_get_sock(struct bpf_map *map, u32 key)
+{
+	struct bpf_stab *stab;
+	struct sock *sk;
+
+	if (map->map_type != BPF_MAP_TYPE_SOCKMAP)
+		return ERR_PTR(-EINVAL);
+	if (key >= map->max_entries)
+		return ERR_PTR(-E2BIG);
+
+	stab = container_of(map, struct bpf_stab, map);
+	spin_lock_bh(&stab->lock);
+	sk = xchg(&stab->sks[key], NULL);
+	if (sk) {
+		sock_hold(sk);
+		sock_map_unref(sk, &stab->sks[key]);
+	}
+	spin_unlock_bh(&stab->lock);
+
+	return sk ?: ERR_PTR(-ENOENT);
+}
+EXPORT_SYMBOL_GPL(sock_map_delete_elem_get_sock);
+
 static int sock_map_get_next_key(struct bpf_map *map, void *key, void *next)
 {
 	struct bpf_stab *stab = container_of(map, struct bpf_stab, map);
@@ -618,6 +646,21 @@ static long sock_map_update_elem(struct bpf_map *map, void *key,
 	local_bh_enable();
 	return ret;
 }
+
+/*
+ * Reinsert a previously-loaned socket into its SOCKMAP slot, restoring the
+ * map reference so the socket is visible to future lookups again.
+ */
+int sock_map_update_elem_sock(struct bpf_map *map, u32 key, struct sock *sk,
+			      u64 flags)
+{
+	if (map->map_type != BPF_MAP_TYPE_SOCKMAP)
+		return -EINVAL;
+	if (key >= map->max_entries)
+		return -E2BIG;
+	return sock_map_update_elem(map, &key, sk, flags);
+}
+EXPORT_SYMBOL_GPL(sock_map_update_elem_sock);
 
 BPF_CALL_4(bpf_sock_map_update, struct bpf_sock_ops_kern *, sops,
 	   struct bpf_map *, map, void *, key, u64, flags)

@@ -3658,6 +3658,9 @@ int bpf_prog_test_run_syscall(struct bpf_prog *prog,
 int sock_map_get_from_fd(const union bpf_attr *attr, struct bpf_prog *prog);
 int sock_map_prog_detach(const union bpf_attr *attr, enum bpf_prog_type ptype);
 int sock_map_update_elem_sys(struct bpf_map *map, void *key, void *value, u64 flags);
+struct sock *sock_map_delete_elem_get_sock(struct bpf_map *map, u32 key);
+int sock_map_update_elem_sock(struct bpf_map *map, u32 key, struct sock *sk,
+			      u64 flags);
 int sock_map_bpf_prog_query(const union bpf_attr *attr,
 			    union bpf_attr __user *uattr);
 int sock_map_link_create(const union bpf_attr *attr, struct bpf_prog *prog);
@@ -3750,6 +3753,18 @@ static inline int sock_map_prog_detach(const union bpf_attr *attr,
 
 static inline int sock_map_update_elem_sys(struct bpf_map *map, void *key, void *value,
 					   u64 flags)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline struct sock *
+sock_map_delete_elem_get_sock(struct bpf_map *map, u32 key)
+{
+	return ERR_PTR(-EOPNOTSUPP);
+}
+
+static inline int sock_map_update_elem_sock(struct bpf_map *map, u32 key,
+					    struct sock *sk, u64 flags)
 {
 	return -EOPNOTSUPP;
 }
