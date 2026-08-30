@@ -392,6 +392,51 @@ bool io_uring_cmd_post_mshot_cqe32(struct io_uring_cmd *cmd,
 }
 
 /*
+ * Post a CQE32 completion for a uring command, framing the two 64-bit extras
+ * as the second cqe slot (extra1/extra2). Falls back to CQ overflow when the
+ * ring is full, so command completions are never dropped.
+ *
+ * Return: true when posted, false when the ring was not configured for CQE32.
+ */
+bool io_uring_cmd_post_cqe32(struct io_uring_cmd *cmd, s32 res, u32 flags,
+			     u64 extra1, u64 extra2)
+{
+	struct io_kiocb *req = cmd_to_io_kiocb(cmd);
+	struct io_uring_cqe cqe[2] = {
+		{
+			.res = res,
+			.flags = flags,
+		},
+		{
+			.user_data = extra1,
+			.res = lower_32_bits(extra2),
+			.flags = upper_32_bits(extra2),
+		},
+	};
+
+	if (!(req->ctx->flags & (IORING_SETUP_CQE32 | IORING_SETUP_CQE_MIXED)))
+		return false;
+	if (req->ctx->flags & IORING_SETUP_CQE_MIXED)
+		cqe[0].flags |= IORING_CQE_F_32;
+	if (!wq_list_empty(&req->ctx->submit_state.compl_reqs))
+		__io_submit_flush_completions(req->ctx);
+	if (io_req_post_cqe32(req, cqe))
+		return true;
+	return io_req_post_cqe32_overflow(req, cqe);
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_post_cqe32);
+
+/*
+ * Flush any completed CQEs deferred in command task work so they are visible
+ * to userspace before the command is torn down.
+ */
+void io_uring_cmd_commit_cqes(struct io_uring_cmd *cmd)
+{
+	io_submit_flush_completions(cmd_to_io_kiocb(cmd)->ctx);
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_commit_cqes);
+
+/*
  * Work with io_uring_mshot_cmd_post_cqe() together for committing the
  * provided buffer upfront
  */

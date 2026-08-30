@@ -768,10 +768,12 @@ static bool io_fill_cqe_aux32(struct io_ring_ctx *ctx,
 			      struct io_uring_cqe src_cqe[2])
 {
 	struct io_uring_cqe *cqe;
+	bool mixed = ctx->flags & IORING_SETUP_CQE_MIXED;
 
 	if (WARN_ON_ONCE(!(ctx->flags & (IORING_SETUP_CQE32|IORING_SETUP_CQE_MIXED))))
 		return false;
-	if (unlikely(!io_get_cqe(ctx, &cqe, true)))
+	/* Fixed CQE32 rings count one 32-byte CQE as one CQ slot. */
+	if (unlikely(!io_get_cqe(ctx, &cqe, mixed)))
 		return false;
 
 	memcpy(cqe, src_cqe, 2 * sizeof(*cqe));
@@ -910,6 +912,46 @@ bool io_req_post_cqe32(struct io_kiocb *req, struct io_uring_cqe cqe[2])
 		spin_unlock(&ctx->completion_lock);
 	} else {
 		posted = io_fill_cqe_aux32(ctx, cqe);
+	}
+
+	ctx->submit_state.cq_flush = true;
+	return posted;
+}
+
+/*
+ * Post a 32-byte CQE through the overflow path when the CQ ring is full.
+ * CQE32 rings count one 32-byte slot per entry, so the second (extra) slot is
+ * carried in a big-CQE overflow record rather than occupying its own slot.
+ *
+ * Return: true when the completion was queued.
+ */
+bool io_req_post_cqe32_overflow(struct io_kiocb *req,
+				struct io_uring_cqe cqe[2])
+{
+	struct io_ring_ctx *ctx = req->ctx;
+	struct io_big_cqe big = {
+		.extra1 = cqe[1].user_data,
+		.extra2 = (u64)cqe[1].flags << 32 | (u32)cqe[1].res,
+	};
+	struct io_cqe base;
+	bool posted;
+
+	lockdep_assert(!io_wq_current_is_worker());
+	lockdep_assert_held(&ctx->uring_lock);
+
+	cqe[0].user_data = req->cqe.user_data;
+	base = io_init_cqe(cqe[0].user_data, cqe[0].res, cqe[0].flags);
+	if (!(ctx->int_flags & IO_RING_F_LOCKLESS_CQ)) {
+		spin_lock(&ctx->completion_lock);
+		posted = io_cqe_overflow_locked(ctx, &base, &big);
+		spin_unlock(&ctx->completion_lock);
+	} else {
+		struct io_overflow_cqe *ocqe;
+
+		ocqe = io_alloc_ocqe(ctx, &base, &big, GFP_KERNEL);
+		spin_lock(&ctx->completion_lock);
+		posted = io_cqring_add_overflow(ctx, ocqe);
+		spin_unlock(&ctx->completion_lock);
 	}
 
 	ctx->submit_state.cq_flush = true;

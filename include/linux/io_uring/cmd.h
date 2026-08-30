@@ -91,6 +91,23 @@ struct io_br_sel io_uring_cmd_buffer_select(struct io_uring_cmd *ioucmd,
 bool io_uring_mshot_cmd_post_cqe(struct io_uring_cmd *ioucmd,
 				 struct io_br_sel *sel, unsigned int issue_flags);
 
+/**
+ * io_uring_cmd_post_cqe32() - Post a CQE32 completion for a uring command.
+ * @ioucmd: command to complete
+ * @res: primary completion result
+ * @flags: primary completion flags
+ * @extra1, @extra2: second CQE slot (arbitrary 64-bit extras)
+ *
+ * Return: true when posted, false when the ring is not CQE32/MIXED-configured.
+ */
+bool io_uring_cmd_post_cqe32(struct io_uring_cmd *ioucmd, s32 res, u32 flags,
+			     u64 extra1, u64 extra2);
+
+/**
+ * io_uring_cmd_commit_cqes() - Flush deferred completions for @ioucmd.
+ */
+void io_uring_cmd_commit_cqes(struct io_uring_cmd *ioucmd);
+
 #else
 static inline int
 io_uring_cmd_import_fixed(u64 ubuf, unsigned long len, int rw,
@@ -133,6 +150,18 @@ static inline bool io_uring_mshot_cmd_post_cqe(struct io_uring_cmd *ioucmd,
 {
 	return true;
 }
+
+static inline bool io_uring_cmd_post_cqe32(struct io_uring_cmd *ioucmd,
+					   s32 res, u32 flags,
+					   u64 extra1, u64 extra2)
+{
+	return false;
+}
+
+static inline void io_uring_cmd_commit_cqes(struct io_uring_cmd *ioucmd)
+{
+}
+
 #endif
 
 static inline struct io_uring_cmd *io_uring_cmd_from_tw(struct io_tw_req tw_req)
