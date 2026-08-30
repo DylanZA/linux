@@ -14,6 +14,7 @@
 #include <linux/types.h>
 #include <net/netdev_queues.h>
 #include <net/netdev_rx_queue.h>
+#include <net/devmem.h>
 #include <net/page_pool/helpers.h>
 #include <net/page_pool/memory_provider.h>
 #include <net/sock.h>
@@ -363,6 +364,59 @@ struct net_devmem_dmabuf_binding *net_devmem_lookup_dmabuf(u32 id)
 
 	return binding;
 }
+
+/*
+ * Look up the RX dma-buf binding for @id and return a reference to its dmabuf
+ * if it is bound to an RX data path owned by the same device as the socket
+ * @sk is connected to. The caller owns the returned dma_buf reference and must
+ * release it (e.g. with dma_buf_put()) when done.
+ *
+ * Return: a referenced dma_buf, or an ERR_PTR with a negative errno.
+ */
+struct dma_buf *net_devmem_get_rx_dmabuf(u32 id, struct sock *sk)
+{
+	struct net_devmem_dmabuf_binding *binding;
+	struct net_device *dst_dev;
+	struct dst_entry *dst;
+	struct dma_buf *dmabuf = ERR_PTR(-ENOENT);
+
+	binding = net_devmem_lookup_dmabuf(id);
+	if (!binding)
+		return ERR_PTR(-ENOENT);
+	if (binding->direction != DMA_FROM_DEVICE) {
+		dmabuf = ERR_PTR(-EXDEV);
+		goto out;
+	}
+
+	rcu_read_lock();
+	dst = __sk_dst_get(sk);
+	if (unlikely(!dst)) {
+		if (inet_csk(sk)->icsk_af_ops->rebuild_header(sk)) {
+			dmabuf = ERR_PTR(-EHOSTUNREACH);
+			goto out_unlock;
+		}
+		dst = __sk_dst_get(sk);
+		if (unlikely(!dst)) {
+			dmabuf = ERR_PTR(-ENODEV);
+			goto out_unlock;
+		}
+	}
+	dst_dev = dst_dev_rcu(dst);
+	if (unlikely(!dst_dev) ||
+	    unlikely(dst_dev != READ_ONCE(binding->dev) &&
+		     dst_dev != READ_ONCE(binding->vdev))) {
+		dmabuf = ERR_PTR(-ENODEV);
+		goto out_unlock;
+	}
+	get_dma_buf(binding->dmabuf);
+	dmabuf = binding->dmabuf;
+out_unlock:
+	rcu_read_unlock();
+out:
+	net_devmem_dmabuf_binding_put(binding);
+	return dmabuf;
+}
+EXPORT_SYMBOL_GPL(net_devmem_get_rx_dmabuf);
 
 void net_devmem_get_net_iov(struct net_iov *niov)
 {
