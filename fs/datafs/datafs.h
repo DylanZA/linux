@@ -10,6 +10,7 @@
 #include <linux/refcount.h>
 #include <linux/spinlock.h>
 #include <linux/datafs.h>
+#include <linux/xarray.h>
 
 #define DATAFS_MAGIC		0x64617461
 #define DATAFS_DEFAULT_TIMEOUT	5000
@@ -20,6 +21,9 @@
 
 struct datafs_conn_pool;
 struct datafs_async_transport;
+struct datafs_devmem_loan;
+struct datafs_devmem_read;
+struct io_uring_cmd;
 
 struct net;
 
@@ -53,6 +57,13 @@ struct datafs_sb_info {
 	struct net *net_ns;
 	struct datafs_conn_pool *conn_pool;
 	struct datafs_async_transport *async_transport;
+	/* Protects the phase-2 loan registry and waiter list. */
+	spinlock_t loan_lock;
+	struct list_head loan_waiters;
+	struct xarray devmem_loans;
+	u32 next_loan_id;
+	struct xarray devmem_copies;
+	u32 next_copy_id;
 	atomic64_t next_id;
 };
 
@@ -101,6 +112,18 @@ ssize_t datafs_read_to_iter(struct datafs_sb_info *sbi, const char *path,
 int datafs_read_async(struct datafs_sb_info *sbi, const char *path,
 			      u32 path_len, u64 ino, u64 offset, size_t len,
 			      struct netfs_io_subrequest *subreq);
+int datafs_devmem_read(struct datafs_sb_info *sbi, const char *path,
+		       u32 path_len, u64 ino, u64 offset, size_t len,
+		       u16 host_group, u32 dmabuf_id, u32 flags,
+		       struct io_uring_cmd *cmd, unsigned int issue_flags);
+int datafs_devmem_cancel(struct io_uring_cmd *cmd);
+int datafs_devmem_dontneed(struct datafs_sb_info *sbi, u16 loan_id,
+			   u32 dmabuf_id, u32 token_start,
+			   u32 token_count);
+int datafs_devmem_copy_response(struct datafs_sb_info *sbi,
+				struct io_uring_cmd *cmd,
+				unsigned int issue_flags);
+void datafs_devmem_shutdown(struct datafs_sb_info *sbi);
 
 int tcpfs_bpf_init(void);
 void tcpfs_bpf_exit(void);

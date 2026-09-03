@@ -8,7 +8,8 @@ LIBURING ?= $(HOME)/dev/liburing
 BPF_OBJS := datafs_s3.bpf.o datafs_rest.bpf.o datafs_nfs.bpf.o datafs_smb.bpf.o \
 	datafs_nfs_bad.bpf.o datafs_nfs_ovl.bpf.o datafs_nfs_serial.bpf.o
 RUST_BINS := datafs_s3_loader datafs_rest_loader datafs_nfs_loader datafs_smb_loader \
-	datafs_nfs_test_server datafs_smb_test_server
+	datafs_bench_read datafs_nfs_test_server \
+	datafs_smb_test_server datafs_devmem_smoke
 URING_BINS := datafs_uring_read
 LIBBPF_OUT := $(abspath .libbpf)
 LIBBPF_A := $(LIBBPF_OUT)/libbpf.a
@@ -23,7 +24,7 @@ BPF_CFLAGS := -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter \
 	-I$(ROOT)/tools/include/uapi
 
 .PHONY: all check clean libbpf rust smoke-nfs smoke-rest smoke-smb smoke-s3 \
-	smoke-s3
+	smoke-s3-devmem benchmark-s3
 
 all: $(BPF_OBJS) $(LIBBPF_A) $(LIBURING_A) rust $(URING_BINS)
 
@@ -36,7 +37,9 @@ check: all
 	LIBURING=$(LIBURING) $(CARGO) clippy --all-targets --offline -- -D warnings
 	$(CARGO) fmt -- --check
 	PYTHONDONTWRITEBYTECODE=1 python3 datafs_rest_example.py --self-test
-	bash -n run_datafs_smoke.sh datafs_smoke_guest.sh
+	bash -n run_datafs_smoke.sh datafs_smoke_guest.sh \
+		run_datafs_benchmark.sh datafs_benchmark_guest.sh \
+		datafs_bench_mount.sh datafs_bench_compare_s3.sh
 	@tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
 		./datafs_nfs_test_server --write-expected "$$tmp"; \
 		test "$$(wc -c < "$$tmp")" -eq 8192
@@ -55,6 +58,12 @@ smoke-smb: all
 
 smoke-s3: all
 	./run_datafs_smoke.sh datafs-s3
+
+smoke-s3-devmem: all
+	./run_datafs_smoke.sh datafs-s3-devmem
+
+benchmark-s3: all
+	./run_datafs_benchmark.sh
 
 libbpf $(LIBBPF_A):
 	mkdir -p $(LIBBPF_OUT)

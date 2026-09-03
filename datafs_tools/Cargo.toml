@@ -31,9 +31,17 @@ name = "datafs_smb_loader"
 path = "src/bin/datafs_smb_loader.rs"
 
 [[bin]]
+name = "datafs_bench_read"
+path = "src/bin/datafs_bench_read.rs"
+
+[[bin]]
 name = "datafs_nfs_test_server"
 path = "src/bin/datafs_nfs_test_server.rs"
 
 [[bin]]
 name = "datafs_smb_test_server"
 path = "src/bin/datafs_smb_test_server.rs"
+
+[[bin]]
+name = "datafs_devmem_smoke"
+path = "src/bin/datafs_devmem_smoke.rs"

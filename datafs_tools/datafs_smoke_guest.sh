@@ -599,6 +599,10 @@ if [[ -n $devmem_if ]]; then
 		ethtool -L "$devmem_if" combined 1 ||
 			fail "could not restrict $devmem_if to one combined queue"
 	fi
+	ethtool -K "$devmem_if" gro on ||
+		fail "could not enable software GRO on $devmem_if"
+	ethtool -k "$devmem_if" | grep -q '^generic-receive-offload: on' ||
+		fail "software GRO is not enabled on $devmem_if"
 	ethtool -K "$devmem_if" rx-gro-hw off
 	ethtool -G "$devmem_if" tcp-data-split on
 fi

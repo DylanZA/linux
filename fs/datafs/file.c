@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/limits.h>
+#include <linux/io_uring/cmd.h>
 #include <linux/slab.h>
+#include <uapi/linux/datafs.h>
 
 #include "datafs.h"
 
@@ -27,6 +29,90 @@ static int datafs_open(struct inode *inode, struct file *file)
 		return -EROFS;
 	file->f_mode |= FMODE_CAN_ODIRECT | FMODE_NOWAIT;
 	return 0;
+}
+
+/**
+ * datafs_uring_cmd() - Dispatch datafs TCP-devmem io_uring commands.
+ * @cmd: uring command
+ * @issue_flags: command issue flags (CANCEL, COMPLETE_DEFER, ..., CQE32)
+ *
+ * Validates SQE fields and routes to read or DONTNEED handling. Reads require
+ * O_DIRECT; DONTNEED returns published token ranges.
+ *
+ * Return: -EIOCBQUEUED for an accepted read, or a negative errno.
+ */
+static int datafs_uring_cmd(struct io_uring_cmd *cmd,
+			    unsigned int issue_flags)
+{
+	const struct io_uring_sqe *sqe = cmd->sqe;
+	const struct datafs_uring_devmem_cmd *dcmd;
+	struct inode *inode = file_inode(cmd->file);
+	struct datafs_inode_info *di = DATAFS_I(inode);
+	struct datafs_sb_info *sbi = DATAFS_SB(inode->i_sb);
+	u32 flags, dmabuf_id, len;
+	u16 host_group;
+	u64 offset;
+	loff_t size;
+
+	if (cmd->cmd_op == DATAFS_URING_CMD_COPY_RESPONSE) {
+		const struct datafs_uring_copy_cmd *ccmd =
+			io_uring_sqe_cmd(sqe, struct datafs_uring_copy_cmd);
+
+		if (unlikely(issue_flags & IO_URING_F_CANCEL))
+			return 0;
+		if (!S_ISREG(inode->i_mode) || sqe->ioprio || sqe->__pad1 ||
+		    !sqe->addr || !sqe->len ||
+		    sqe->uring_cmd_flags != IORING_URING_CMD_FIXED ||
+		    sqe->personality || sqe->zcrx_ifq_idx || ccmd->reserved)
+			return -EINVAL;
+		return datafs_devmem_copy_response(sbi, cmd, issue_flags);
+	}
+	if (cmd->cmd_op != DATAFS_URING_CMD_RECV_DEVMEM)
+		return -EOPNOTSUPP;
+	if (unlikely(issue_flags & IO_URING_F_CANCEL))
+		return datafs_devmem_cancel(cmd);
+	dcmd = io_uring_sqe_cmd(sqe, struct datafs_uring_devmem_cmd);
+	/*
+	 * datafs deliberately reuses the 32-bit SQE union slot exposed as
+	 * zcrx_ifq_idx.  For this command it is a netdev RX dma-buf binding ID,
+	 * not an interface-queue index.  Keep that private interpretation here
+	 * instead of adding a datafs-specific alias to generic io_uring UAPI.
+	 */
+	flags = READ_ONCE(dcmd->flags);
+	dmabuf_id = READ_ONCE(sqe->zcrx_ifq_idx);
+	offset = READ_ONCE(dcmd->offset);
+	len = READ_ONCE(sqe->len);
+	host_group = READ_ONCE(sqe->buf_group);
+	if (!S_ISREG(inode->i_mode) || !(cmd->file->f_flags & O_DIRECT))
+		return -EINVAL;
+	if (sqe->ioprio || sqe->__pad1 || sqe->addr ||
+	    sqe->uring_cmd_flags || sqe->personality || dcmd->reserved)
+		return -EINVAL;
+	if (flags & ~(DATAFS_URING_F_WAIT_SOCKET |
+		      DATAFS_URING_F_DEVMEM_DONTNEED))
+		return -EINVAL;
+
+	if (flags & DATAFS_URING_F_DEVMEM_DONTNEED) {
+		if (flags & DATAFS_URING_F_WAIT_SOCKET || offset > U32_MAX ||
+		    !len || len > 1024)
+			return -EINVAL;
+		return datafs_devmem_dontneed(sbi, host_group, dmabuf_id,
+					      offset, len);
+	}
+
+	if (!dmabuf_id || !len || len > MAX_RW_COUNT)
+		return -EINVAL;
+	size = i_size_read(inode);
+	if (size < 0 || offset > MAX_LFS_FILESIZE)
+		return -EOVERFLOW;
+	if (offset >= size)
+		return 0;
+	len = min_t(u64, len, size - offset);
+
+	return datafs_devmem_read(sbi, di->path ?: "",
+				 strlen(di->path ?: ""), di->remote_ino,
+				 offset, len, host_group, dmabuf_id, flags,
+				 cmd, issue_flags);
 }
 
 /**
@@ -267,6 +353,7 @@ static int datafs_iterate_shared(struct file *file, struct dir_context *ctx)
 const struct file_operations datafs_file_fops = {
 	.open		= datafs_open,
 	.read_iter	= netfs_file_read_iter,
+	.uring_cmd	= datafs_uring_cmd,
 	.splice_read	= filemap_splice_read,
 	.mmap_prepare	= generic_file_readonly_mmap_prepare,
 	.llseek		= generic_file_llseek,

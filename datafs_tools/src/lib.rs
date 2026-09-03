@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 
+pub mod devmem;
 pub mod dispatch;
 pub mod loader;
 pub mod rest;

@@ -6,8 +6,9 @@ and benchmark runners.
 
 The S3, OpenAPI REST, NFSv4, and SMB2 protocol programs remain `.bpf.c` files
 because they compile to BPF bytecode. Host-side loaders, fixture servers, the
-fixture servers are Rust. Builds use the cached `libc` crate, in-tree libbpf,
-and the adjacent liburing checkout without network access.
+TCP-devmem client, and the read benchmark are Rust. Builds use the cached
+`libc` crate, in-tree libbpf, and the adjacent liburing checkout without
+network access.
 
 Build and validate everything with:
 
@@ -16,13 +17,14 @@ make -C datafs_tools
 make -C datafs_tools check
 ```
 
-Run the protocol suites with:
+Run the protocol and TCP-devmem suites with:
 
 ```bash
 ./datafs_tools/run_datafs_smoke.sh datafs-nfs
 ./datafs_tools/run_datafs_smoke.sh datafs-rest
 ./datafs_tools/run_datafs_smoke.sh datafs-smb
 ./datafs_tools/run_datafs_smoke.sh datafs-s3
+./datafs_tools/run_datafs_smoke.sh datafs-s3-devmem
 ```
 
 See `README.rest.md` for the OpenAPI-generated REST filesystem and its

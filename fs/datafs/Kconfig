@@ -5,11 +5,14 @@ config DATAFS_FS
 	depends on INET
 	depends on BPF_SYSCALL
 	depends on BPF_JIT
+	depends on NET_DEVMEM
+	depends on IO_URING
 	select NETFS_SUPPORT
 	help
 	  datafs is an experimental read-only filesystem that uses netfslib for
 	  regular-file reads and BPF struct_ops callbacks for protocol
 	  framing and response decoding.  Ordinary operations use a bounded TCP
-	  connection pool.
+	  connection pool.  The io_uring command uses TCP device memory and
+	  sockets loaned by the BPF provider.
 
 	  If unsure, say N.

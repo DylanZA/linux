@@ -350,6 +350,8 @@ static void datafs_free_fc(struct fs_context *fc)
 
 	if (!sbi)
 		return;
+	xa_destroy(&sbi->devmem_copies);
+	xa_destroy(&sbi->devmem_loans);
 	put_net(sbi->net_ns);
 	datafs_free_opts(&sbi->opts);
 	kfree(sbi);
@@ -383,6 +385,12 @@ static int datafs_init_fs_context(struct fs_context *fc)
 	sbi->opts.pool_size = DATAFS_DEFAULT_POOL_SIZE;
 	sbi->net_ns = get_net(current->nsproxy->net_ns);
 	atomic64_set(&sbi->next_id, 1);
+	spin_lock_init(&sbi->loan_lock);
+	INIT_LIST_HEAD(&sbi->loan_waiters);
+	xa_init_flags(&sbi->devmem_loans, XA_FLAGS_ALLOC);
+	sbi->next_loan_id = 1;
+	xa_init_flags(&sbi->devmem_copies, XA_FLAGS_ALLOC);
+	sbi->next_copy_id = 1;
 	fc->s_fs_info = sbi;
 	fc->ops = &datafs_context_ops;
 	return 0;
@@ -392,8 +400,9 @@ static int datafs_init_fs_context(struct fs_context *fc)
  * datafs_kill_sb() - Tear down a live datafs mount.
  * @sb: superblock being unmounted
  *
- * Destroys the transport pool, releases the provider and network namespace,
- * frees option strings, and releases the superblock state.
+ * Stops devmem command work, destroys the loan registry and transport pool,
+ * releases the provider and network namespace, frees option strings, and
+ * releases the superblock state. Must be called with no commands in flight.
  */
 static void datafs_kill_sb(struct super_block *sb)
 {
@@ -403,6 +412,9 @@ static void datafs_kill_sb(struct super_block *sb)
 	if (!sbi)
 		return;
 
+	datafs_devmem_shutdown(sbi);
+	xa_destroy(&sbi->devmem_copies);
+	xa_destroy(&sbi->devmem_loans);
 	datafs_conn_pool_destroy(sbi);
 	tcpfs_bpf_put(sbi->bpf);
 	put_net(sbi->net_ns);
