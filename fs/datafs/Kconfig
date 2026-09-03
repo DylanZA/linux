@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config DATAFS_FS
+	tristate "Data filesystem over TCP and BPF"
+	depends on INET
+	depends on BPF_SYSCALL
+	depends on BPF_JIT
+	select NETFS_SUPPORT
+	help
+	  datafs is an experimental read-only filesystem that uses netfslib for
+	  regular-file reads and BPF struct_ops callbacks for protocol
+	  framing and response decoding.  Ordinary operations use a bounded TCP
+	  connection pool.
+
+	  If unsure, say N.

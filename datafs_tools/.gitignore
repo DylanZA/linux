@@ -1,0 +1,14 @@
+/.libbpf/
+/target/
+!/.cargo/
+!/.cargo/config.toml
+/*.bpf.o
+/datafs_bench_read
+/datafs_nfs_loader
+/datafs_nfs_test_server
+/datafs_s3_loader
+/datafs_rest_loader
+/datafs_smb_loader
+/datafs_smb_test_server
+/datafs_devmem_smoke
+/datafs_uring_read

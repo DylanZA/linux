@@ -1,0 +1,47 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "datafs arithmetic example",
+    "version": "1.0.0"
+  },
+  "servers": [
+    { "url": "http://127.0.0.1:8000/v1" }
+  ],
+  "paths": {
+    "/add": { "get": { "operationId": "add", "parameters": [{ "$ref": "#/components/parameters/a" }, { "$ref": "#/components/parameters/b" }], "responses": { "200": { "$ref": "#/components/responses/result" } } } },
+    "/subtract": { "get": { "operationId": "subtract", "parameters": [{ "$ref": "#/components/parameters/a" }, { "$ref": "#/components/parameters/b" }], "responses": { "200": { "$ref": "#/components/responses/result" } } } },
+    "/multiply": { "get": { "operationId": "multiply", "parameters": [{ "$ref": "#/components/parameters/a" }, { "$ref": "#/components/parameters/b" }], "responses": { "200": { "$ref": "#/components/responses/result" } } } },
+    "/divide": { "get": { "operationId": "divide", "parameters": [{ "$ref": "#/components/parameters/a" }, { "$ref": "#/components/parameters/b" }], "responses": { "200": { "$ref": "#/components/responses/result" }, "400": { "description": "Division by zero" } } } },
+    "/modulo": { "get": { "operationId": "modulo", "parameters": [{ "$ref": "#/components/parameters/a" }, { "$ref": "#/components/parameters/b" }], "responses": { "200": { "$ref": "#/components/responses/result" }, "400": { "description": "Modulo by zero" } } } },
+    "/power": { "get": { "operationId": "power", "parameters": [{ "$ref": "#/components/parameters/a" }, { "$ref": "#/components/parameters/b" }], "responses": { "200": { "$ref": "#/components/responses/result" }, "400": { "description": "Exponent outside the supported range" } } } },
+    "/gcd": { "get": { "operationId": "gcd", "parameters": [{ "$ref": "#/components/parameters/a" }, { "$ref": "#/components/parameters/b" }], "responses": { "200": { "$ref": "#/components/responses/result" } } } }
+  },
+  "components": {
+    "schemas": {
+      "Result": {
+        "type": "object",
+        "required": ["a", "b", "operation", "result"],
+        "properties": {
+          "a": { "type": "integer" },
+          "b": { "type": "integer" },
+          "operation": { "type": "string" },
+          "result": { "type": "number" }
+        }
+      }
+    },
+    "parameters": {
+      "a": { "name": "a", "in": "query", "schema": { "type": "integer", "default": 0 } },
+      "b": { "name": "b", "in": "query", "schema": { "type": "integer", "default": 0 } }
+    },
+    "responses": {
+      "result": {
+        "description": "Arithmetic result",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Result" }
+          }
+        }
+      }
+    }
+  }
+}

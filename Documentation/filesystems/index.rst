@@ -84,6 +84,7 @@ Documentation for filesystem implementations.
    dax
    debugfs
    dlmfs
+   datafs
    ecryptfs
    efivarfs
    erofs
@@ -117,6 +118,7 @@ Documentation for filesystem implementations.
    spufs/index
    squashfs
    sysfs
+   datafs
    tmpfs
    ubifs
    ubifs-authentication

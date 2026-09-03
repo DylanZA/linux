@@ -1,0 +1,39 @@
+[package]
+name = "datafs-tools"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+publish = false
+build = "build.rs"
+
+[dependencies]
+libc = "=0.2.186"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "debuginfo"
+
+[[bin]]
+name = "datafs_s3_loader"
+path = "src/bin/datafs_s3_loader.rs"
+
+[[bin]]
+name = "datafs_rest_loader"
+path = "src/bin/datafs_rest_loader.rs"
+
+[[bin]]
+name = "datafs_nfs_loader"
+path = "src/bin/datafs_nfs_loader.rs"
+
+[[bin]]
+name = "datafs_smb_loader"
+path = "src/bin/datafs_smb_loader.rs"
+
+[[bin]]
+name = "datafs_nfs_test_server"
+path = "src/bin/datafs_nfs_test_server.rs"
+
+[[bin]]
+name = "datafs_smb_test_server"
+path = "src/bin/datafs_smb_test_server.rs"
